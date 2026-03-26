@@ -266,6 +266,12 @@ export default function HobbingOptimizerApp() {
   const [toolChangeTime, setToolChangeTime] = useState(
     String(DEFAULT_COST_PARAMETERS.toolChangeTime),
   );
+  const [toolSharpeningCost, setToolSharpeningCost] = useState(
+    String(DEFAULT_COST_PARAMETERS.toolSharpeningCost),
+  );
+  const [toolSharpeningLife, setToolSharpeningLife] = useState(
+    String(DEFAULT_COST_PARAMETERS.toolSharpeningLife),
+  );
   const [profile, setProfile] = useState<OptimizationProfile>("preview");
   const [algorithm, setAlgorithm] = useState<OptimizationAlgorithm>("mofata");
   const [config, setConfig] = useState<ModelConfig | null>(null);
@@ -321,6 +327,14 @@ export default function HobbingOptimizerApp() {
       toolChangeTime,
       DEFAULT_COST_PARAMETERS.toolChangeTime,
     ),
+    toolSharpeningCost: safeNumberValue(
+      toolSharpeningCost,
+      DEFAULT_COST_PARAMETERS.toolSharpeningCost,
+    ),
+    toolSharpeningLife: safeNumberValue(
+      toolSharpeningLife,
+      DEFAULT_COST_PARAMETERS.toolSharpeningLife,
+    ),
   };
   const currentAlgorithmDescriptor = buildAlgorithmDescriptor(
     matlabConversion,
@@ -358,6 +372,8 @@ export default function HobbingOptimizerApp() {
       toolPrice: Number(toolPrice),
       electricityRate: Number(electricityRate),
       toolChangeTime: Number(toolChangeTime),
+      toolSharpeningCost: Number(toolSharpeningCost),
+      toolSharpeningLife: Number(toolSharpeningLife),
     };
 
     const numbers = [
@@ -371,6 +387,8 @@ export default function HobbingOptimizerApp() {
       request.toolPrice,
       request.electricityRate,
       request.toolChangeTime,
+      request.toolSharpeningCost,
+      request.toolSharpeningLife,
     ];
 
     if (
@@ -414,11 +432,7 @@ export default function HobbingOptimizerApp() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          material,
-          tool,
-          maxPower: parsedMaxPower,
-        }),
+        body: JSON.stringify(formSnapshot),
       });
 
       const result = (await response.json()) as BuildModelResponse;
@@ -432,11 +446,7 @@ export default function HobbingOptimizerApp() {
       setConfig(result.config);
       setModelSource(result.source);
       setModelNotes(result.notes);
-      setModelRequest({
-        material,
-        tool,
-        maxPower: parsedMaxPower,
-      });
+      setModelRequest(formSnapshot);
       setStatus(
         result.source === "deepseek"
           ? `DeepSeek 建模完成，可以开始运行 ${activeAlgorithm.label}。`
@@ -759,37 +769,193 @@ export default function HobbingOptimizerApp() {
           </div>
 
           <div className="mt-6 grid gap-4">
-            <label className="grid gap-2">
-              <span className="text-sm font-medium text-foreground">工件材料</span>
-              <input
-                value={material}
-                onChange={(event) => setMaterial(event.target.value)}
-                className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
-                placeholder="例如：40Cr / 20CrMnTi"
-              />
-            </label>
-            <label className="grid gap-2">
-              <span className="text-sm font-medium text-foreground">刀具材料</span>
-              <input
-                value={tool}
-                onChange={(event) => setTool(event.target.value)}
-                className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
-                placeholder="例如：W18Cr4V / 涂层硬质合金"
-              />
-            </label>
-            <label className="grid gap-2">
-              <span className="text-sm font-medium text-foreground">
-                机床最大功率限制 (kW)
-              </span>
-              <input
-                type="number"
-                min="1"
-                step="0.1"
-                value={maxPower}
-                onChange={(event) => setMaxPower(event.target.value)}
-                className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
-              />
-            </label>
+            <div className="rounded-[24px] border border-border/80 bg-white/60 p-4">
+              <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted mb-3">
+                齿轮基础参数
+              </h3>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">齿轮模数 (m)</span>
+                  <input
+                    type="number"
+                    min="0.5"
+                    max="20"
+                    step="0.01"
+                    value={moduleValue}
+                    onChange={(event) => setModuleValue(event.target.value)}
+                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">齿数 (z)</span>
+                  <input
+                    type="number"
+                    min="5"
+                    max="500"
+                    step="1"
+                    value={teeth}
+                    onChange={(event) => setTeeth(event.target.value)}
+                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">齿宽 (B)</span>
+                  <input
+                    type="number"
+                    min="5"
+                    max="300"
+                    step="0.1"
+                    value={faceWidth}
+                    onChange={(event) => setFaceWidth(event.target.value)}
+                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">精度等级 (GB/T 10095)</span>
+                  <input
+                    type="number"
+                    min="3"
+                    max="12"
+                    step="1"
+                    value={accuracyGrade}
+                    onChange={(event) => setAccuracyGrade(event.target.value)}
+                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                  />
+                </label>
+                <label className="grid gap-2 sm:col-span-2">
+                  <span className="text-sm font-medium text-foreground">工件材料及硬度</span>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <input
+                      value={material}
+                      onChange={(event) => setMaterial(event.target.value)}
+                      className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                      placeholder="例如：40Cr调质"
+                    />
+                    <input
+                      type="number"
+                      min="100"
+                      max="500"
+                      step="5"
+                      value={hardness}
+                      onChange={(event) => setHardness(event.target.value)}
+                      className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                      placeholder="硬度 HB"
+                    />
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <div className="rounded-[24px] border border-border/80 bg-white/60 p-4">
+              <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted mb-3">
+                刀具与机床
+              </h3>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">刀具材料</span>
+                  <input
+                    value={tool}
+                    onChange={(event) => setTool(event.target.value)}
+                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                    placeholder="例如：W18Cr4V"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">
+                    机床最大功率 (kW)
+                  </span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    step="0.1"
+                    value={maxPower}
+                    onChange={(event) => setMaxPower(event.target.value)}
+                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="rounded-[24px] border border-border/80 bg-white/60 p-4">
+              <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted mb-3">
+                成本核算参数
+              </h3>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">机床工时费 (元/小时)</span>
+                  <input
+                    type="number"
+                    min="0.5"
+                    max="50"
+                    step="0.1"
+                    value={machineRate}
+                    onChange={(event) => setMachineRate(event.target.value)}
+                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">滚刀采购单价 (元/把)</span>
+                  <input
+                    type="number"
+                    min="100"
+                    max="100000"
+                    step="10"
+                    value={toolPrice}
+                    onChange={(event) => setToolPrice(event.target.value)}
+                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">滚刀刃磨费用 (元/次)</span>
+                  <input
+                    type="number"
+                    min="10"
+                    max="1000"
+                    step="5"
+                    value={toolSharpeningCost}
+                    onChange={(event) => setToolSharpeningCost(event.target.value)}
+                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">刀具刃磨寿命 (件/次)</span>
+                  <input
+                    type="number"
+                    min="5"
+                    max="500"
+                    step="5"
+                    value={toolSharpeningLife}
+                    onChange={(event) => setToolSharpeningLife(event.target.value)}
+                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">电费单价 (元/kWh)</span>
+                  <input
+                    type="number"
+                    min="0.1"
+                    max="10"
+                    step="0.01"
+                    value={electricityRate}
+                    onChange={(event) => setElectricityRate(event.target.value)}
+                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                  />
+                </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">换刀辅助时间 (分钟/次)</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="120"
+                    step="1"
+                    value={toolChangeTime}
+                    onChange={(event) => setToolChangeTime(event.target.value)}
+                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                  />
+                </label>
+              </div>
+            </div>
           </div>
 
           <div className="mt-6 flex flex-col gap-3 sm:flex-row">
@@ -803,7 +969,7 @@ export default function HobbingOptimizerApp() {
             </button>
             <div className="rounded-full border border-border bg-white/75 px-4 py-3 text-sm text-muted">
               {config
-                ? `刀具寿命系数 ${config.constants.tool_life_coeff.toFixed(0)}，切削力系数 ${config.constants.power_coeff.toFixed(4)}`
+                ? `刀具寿命系数 ${config.constants.tool_life_constant.toFixed(0)}，切削力系数 ${config.constants.specific_cutting_force.toFixed(0)}`
                 : "建立模型后将在这里展示核心系数。"}
             </div>
           </div>

@@ -25,6 +25,8 @@ function buildPrompt(input: BuildModelRequest): string {
 - 工件硬度: ${input.hardness} HB
 - 机床工时费: ${input.machineRate} 元/min
 - 滚刀采购单价: ${input.toolPrice} 元
+- 滚刀刃磨费用: ${input.toolSharpeningCost} 元/次
+- 滚刀刃磨寿命: ${input.toolSharpeningLife} 件/次
 - 电价: ${input.electricityRate} 元/kWh
 - 换刀辅助时间: ${input.toolChangeTime} min
 
@@ -37,23 +39,24 @@ function buildPrompt(input: BuildModelRequest): string {
     "auxiliary_time": <0.5 到 5 之间>,
     "travel_clearance_coeff": <1.5 到 4.5 之间>,
     "material_removal_factor": <0.2 到 0.65 之间>,
-    "tool_life_constant": <100 到 320 之间>,
+    "tool_life_constant": <100 到 300 之间>,
     "tool_life_exponent": <0.12 到 0.35 之间>,
-    "specific_cutting_force": <1600 到 4200 之间的数字>,
+    "specific_cutting_force": <2000 到 4000 之间的数字>,
     "roughness_feed_coeff": <4 到 12 之间>,
     "roughness_speed_coeff": <0.01 到 0.08 之间>
   },
   "constraints": {
-    "max_cutting_speed": <25 到 220 之间的数字>,
+    "max_cutting_speed": <30 到 80 之间的数字>,
     "min_tool_life_ratio": <5 到 30 之间的数字>
   }
 }
 
 注意：
-1. tool_life_constant 必须使用泰勒寿命常数 C 的数量级，不要返回几万。
-2. specific_cutting_force 必须使用钢件滚齿常见的单位切削力数量级，不要返回 0.05 这类错误量纲。
-3. 你不需要返回 bounds，系统会根据刀具材料、模数和推荐切削速度自动生成决策变量边界。
-4. 仅输出合法 JSON。
+1. tool_life_constant 必须使用泰勒寿命常数 C 的数量级，范围 100-300，不要返回几万。
+2. specific_cutting_force 必须使用钢件滚齿常见的单位切削力数量级 2000-4000 N/mm²。
+3. max_cutting_speed 对于 W18Cr4V 高速钢加工 40Cr 钢，应在 30-80 m/min 范围。
+4. 你不需要返回 bounds，系统会根据刀具材料、模数和推荐切削速度自动生成决策变量边界。
+5. 仅输出合法 JSON。
 `.trim();
 }
 
@@ -99,6 +102,14 @@ function parseRequestPayload(payload: unknown): BuildModelRequest | null {
     typeof record.toolChangeTime === "number"
       ? record.toolChangeTime
       : Number.NaN;
+  const toolSharpeningCost =
+    typeof record.toolSharpeningCost === "number"
+      ? record.toolSharpeningCost
+      : 80;
+  const toolSharpeningLife =
+    typeof record.toolSharpeningLife === "number"
+      ? record.toolSharpeningLife
+      : 50;
 
   if (
     !material ||
@@ -139,6 +150,8 @@ function parseRequestPayload(payload: unknown): BuildModelRequest | null {
     toolPrice,
     electricityRate,
     toolChangeTime,
+    toolSharpeningCost,
+    toolSharpeningLife,
   };
 }
 
@@ -204,7 +217,7 @@ export async function POST(req: Request) {
     }
 
     const parsed = JSON.parse(content) as unknown;
-    const config = validateDeepSeekConfig(parsed, payload.maxPower);
+    const config = validateDeepSeekConfig(parsed, payload);
 
     if (!config) {
       throw new Error("DeepSeek 返回的模型结构不完整或系数超出允许范围。");

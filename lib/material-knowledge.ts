@@ -283,6 +283,8 @@ function sanitizeRequestInput(input: BuildModelRequest): BuildModelRequest {
     toolPrice: clamp(input.toolPrice, 200, 50000),
     electricityRate: clamp(input.electricityRate, 0.2, 5),
     toolChangeTime: clamp(input.toolChangeTime, 1, 60),
+    toolSharpeningCost: clamp(input.toolSharpeningCost || 80, 20, 500),
+    toolSharpeningLife: clamp(input.toolSharpeningLife || 50, 10, 200),
   };
 }
 
@@ -337,6 +339,8 @@ export function buildFallbackModelConfig(input: BuildModelRequest): {
           toolPrice: sanitized.toolPrice,
           electricityRate: sanitized.electricityRate,
           toolChangeTime: sanitized.toolChangeTime,
+          toolSharpeningCost: sanitized.toolSharpeningCost,
+          toolSharpeningLife: sanitized.toolSharpeningLife,
         },
       },
       bounds: buildBounds(sanitized, maxCuttingSpeed, toolCategory),
@@ -477,6 +481,8 @@ export function validateDeepSeekConfig(
         toolPrice: sanitized.toolPrice,
         electricityRate: sanitized.electricityRate,
         toolChangeTime: sanitized.toolChangeTime,
+        toolSharpeningCost: sanitized.toolSharpeningCost,
+        toolSharpeningLife: sanitized.toolSharpeningLife,
       },
     },
     bounds: buildBounds(sanitized, max_cutting_speed, toolCategory),
