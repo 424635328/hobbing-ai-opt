@@ -12,7 +12,9 @@ import {
 import ParetoChart from "@/components/ParetoChart";
 import ProcessCard from "@/components/ProcessCard";
 import {
+  DEFAULT_COST_PARAMETERS,
   DEFAULT_CONSTRAINTS,
+  DEFAULT_GEAR_PARAMETERS,
   type BuildModelRequest,
   type BuildModelResponse,
   type DecisionVector,
@@ -195,6 +197,11 @@ function safeMaxPowerValue(value: string): number {
   return parsed;
 }
 
+function safeNumberValue(value: string, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function makeJobId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -234,6 +241,31 @@ export default function HobbingOptimizerApp() {
   const [material, setMaterial] = useState("40Cr");
   const [tool, setTool] = useState("W18Cr4V");
   const [maxPower, setMaxPower] = useState("12.0");
+  const [moduleValue, setModuleValue] = useState(
+    String(DEFAULT_GEAR_PARAMETERS.module),
+  );
+  const [teeth, setTeeth] = useState(String(DEFAULT_GEAR_PARAMETERS.teeth));
+  const [faceWidth, setFaceWidth] = useState(
+    String(DEFAULT_GEAR_PARAMETERS.faceWidth),
+  );
+  const [accuracyGrade, setAccuracyGrade] = useState(
+    String(DEFAULT_GEAR_PARAMETERS.accuracyGrade),
+  );
+  const [hardness, setHardness] = useState(
+    String(DEFAULT_GEAR_PARAMETERS.hardness),
+  );
+  const [machineRate, setMachineRate] = useState(
+    String(DEFAULT_COST_PARAMETERS.machineRate),
+  );
+  const [toolPrice, setToolPrice] = useState(
+    String(DEFAULT_COST_PARAMETERS.toolPrice),
+  );
+  const [electricityRate, setElectricityRate] = useState(
+    String(DEFAULT_COST_PARAMETERS.electricityRate),
+  );
+  const [toolChangeTime, setToolChangeTime] = useState(
+    String(DEFAULT_COST_PARAMETERS.toolChangeTime),
+  );
   const [profile, setProfile] = useState<OptimizationProfile>("preview");
   const [algorithm, setAlgorithm] = useState<OptimizationAlgorithm>("mofata");
   const [config, setConfig] = useState<ModelConfig | null>(null);
@@ -271,6 +303,24 @@ export default function HobbingOptimizerApp() {
     material,
     tool,
     maxPower: safeMaxPowerValue(maxPower),
+    module: safeNumberValue(moduleValue, DEFAULT_GEAR_PARAMETERS.module),
+    teeth: safeNumberValue(teeth, DEFAULT_GEAR_PARAMETERS.teeth),
+    faceWidth: safeNumberValue(faceWidth, DEFAULT_GEAR_PARAMETERS.faceWidth),
+    accuracyGrade: safeNumberValue(
+      accuracyGrade,
+      DEFAULT_GEAR_PARAMETERS.accuracyGrade,
+    ),
+    hardness: safeNumberValue(hardness, DEFAULT_GEAR_PARAMETERS.hardness),
+    machineRate: safeNumberValue(machineRate, DEFAULT_COST_PARAMETERS.machineRate),
+    toolPrice: safeNumberValue(toolPrice, DEFAULT_COST_PARAMETERS.toolPrice),
+    electricityRate: safeNumberValue(
+      electricityRate,
+      DEFAULT_COST_PARAMETERS.electricityRate,
+    ),
+    toolChangeTime: safeNumberValue(
+      toolChangeTime,
+      DEFAULT_COST_PARAMETERS.toolChangeTime,
+    ),
   };
   const currentAlgorithmDescriptor = buildAlgorithmDescriptor(
     matlabConversion,
@@ -292,6 +342,46 @@ export default function HobbingOptimizerApp() {
     setRunProfileLabel(null);
     setRunAlgorithmLabel(null);
     setRunAlgorithmDescriptor(null);
+  }
+
+  function buildRequestFromForm(): BuildModelRequest | null {
+    const request: BuildModelRequest = {
+      material: material.trim(),
+      tool: tool.trim(),
+      maxPower: Number(maxPower),
+      module: Number(moduleValue),
+      teeth: Number(teeth),
+      faceWidth: Number(faceWidth),
+      accuracyGrade: Number(accuracyGrade),
+      hardness: Number(hardness),
+      machineRate: Number(machineRate),
+      toolPrice: Number(toolPrice),
+      electricityRate: Number(electricityRate),
+      toolChangeTime: Number(toolChangeTime),
+    };
+
+    const numbers = [
+      request.maxPower,
+      request.module,
+      request.teeth,
+      request.faceWidth,
+      request.accuracyGrade,
+      request.hardness,
+      request.machineRate,
+      request.toolPrice,
+      request.electricityRate,
+      request.toolChangeTime,
+    ];
+
+    if (
+      !request.material ||
+      !request.tool ||
+      numbers.some((value) => !Number.isFinite(value) || value <= 0)
+    ) {
+      return null;
+    }
+
+    return request;
   }
 
   useEffect(() => {

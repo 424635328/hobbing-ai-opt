@@ -18,29 +18,41 @@ function buildPrompt(input: BuildModelRequest): string {
 - 工件材料: ${input.material}
 - 刀具材料: ${input.tool}
 - 机床最大允许功率: ${input.maxPower} kW
+- 齿轮模数: ${input.module} mm
+- 齿轮齿数: ${input.teeth}
+- 齿宽: ${input.faceWidth} mm
+- 齿轮精度等级: ${input.accuracyGrade}
+- 工件硬度: ${input.hardness} HB
+- 机床工时费: ${input.machineRate} 元/min
+- 滚刀采购单价: ${input.toolPrice} 元
+- 电价: ${input.electricityRate} 元/kWh
+- 换刀辅助时间: ${input.toolChangeTime} min
 
-请根据经典切削加工手册，给出适配当前工况的滚齿经验参数，并严格输出 JSON。
+请根据滚齿加工工程经验，给出适配当前工况的滚齿建模参数，并严格输出 JSON。
 必须返回如下结构，不要包含 Markdown，不要包含解释：
 {
-  "bounds": { "lb":[80, 1, 400, 1.0], "ub":[100, 3, 1000, 4.0] },
   "constants": {
-    "P_idle": 3.5,
-    "M_cost": 2.0,
-    "Tool_cost": 1500,
-    "t_c_constant": 104.5,
-    "tool_life_coeff": <40000 到 80000 之间的数字>,
-    "power_coeff": <0.03 到 0.08 之间的数字>
+    "P_idle": <1 到 8 之间>,
+    "machine_efficiency": <0.65 到 0.95 之间>,
+    "auxiliary_time": <0.5 到 5 之间>,
+    "travel_clearance_coeff": <1.5 到 4.5 之间>,
+    "material_removal_factor": <0.2 到 0.65 之间>,
+    "tool_life_constant": <100 到 320 之间>,
+    "tool_life_exponent": <0.12 到 0.35 之间>,
+    "specific_cutting_force": <1600 到 4200 之间的数字>,
+    "roughness_feed_coeff": <4 到 12 之间>,
+    "roughness_speed_coeff": <0.01 到 0.08 之间>
   },
   "constraints": {
-    "max_power": ${input.maxPower},
-    "max_ra": 3.2
+    "max_cutting_speed": <25 到 220 之间的数字>,
+    "min_tool_life_ratio": <5 到 30 之间的数字>
   }
 }
 
 注意：
-1. tool_life_coeff 必须在 40000 到 80000 之间。
-2. power_coeff 必须在 0.03 到 0.08 之间。
-3. bounds 固定返回题目要求的上下界，不要自行扩展。
+1. tool_life_constant 必须使用泰勒寿命常数 C 的数量级，不要返回几万。
+2. specific_cutting_force 必须使用钢件滚齿常见的单位切削力数量级，不要返回 0.05 这类错误量纲。
+3. 你不需要返回 bounds，系统会根据刀具材料、模数和推荐切削速度自动生成决策变量边界。
 4. 仅输出合法 JSON。
 `.trim();
 }
@@ -64,12 +76,70 @@ function parseRequestPayload(payload: unknown): BuildModelRequest | null {
   const tool = typeof record.tool === "string" ? record.tool.trim() : "";
   const maxPower =
     typeof record.maxPower === "number" ? record.maxPower : Number.NaN;
+  const module =
+    typeof record.module === "number" ? record.module : Number.NaN;
+  const teeth = typeof record.teeth === "number" ? record.teeth : Number.NaN;
+  const faceWidth =
+    typeof record.faceWidth === "number" ? record.faceWidth : Number.NaN;
+  const accuracyGrade =
+    typeof record.accuracyGrade === "number"
+      ? record.accuracyGrade
+      : Number.NaN;
+  const hardness =
+    typeof record.hardness === "number" ? record.hardness : Number.NaN;
+  const machineRate =
+    typeof record.machineRate === "number" ? record.machineRate : Number.NaN;
+  const toolPrice =
+    typeof record.toolPrice === "number" ? record.toolPrice : Number.NaN;
+  const electricityRate =
+    typeof record.electricityRate === "number"
+      ? record.electricityRate
+      : Number.NaN;
+  const toolChangeTime =
+    typeof record.toolChangeTime === "number"
+      ? record.toolChangeTime
+      : Number.NaN;
 
-  if (!material || !tool || !Number.isFinite(maxPower) || maxPower <= 0) {
+  if (
+    !material ||
+    !tool ||
+    !Number.isFinite(maxPower) ||
+    maxPower <= 0 ||
+    !Number.isFinite(module) ||
+    module <= 0 ||
+    !Number.isFinite(teeth) ||
+    teeth <= 0 ||
+    !Number.isFinite(faceWidth) ||
+    faceWidth <= 0 ||
+    !Number.isFinite(accuracyGrade) ||
+    !Number.isFinite(hardness) ||
+    hardness <= 0 ||
+    !Number.isFinite(machineRate) ||
+    machineRate <= 0 ||
+    !Number.isFinite(toolPrice) ||
+    toolPrice <= 0 ||
+    !Number.isFinite(electricityRate) ||
+    electricityRate <= 0 ||
+    !Number.isFinite(toolChangeTime) ||
+    toolChangeTime <= 0
+  ) {
     return null;
   }
 
-  return { material, tool, maxPower };
+  return {
+    material,
+    tool,
+    maxPower,
+    module,
+    teeth,
+    faceWidth,
+    accuracyGrade,
+    hardness,
+    machineRate,
+    toolPrice,
+    electricityRate,
+    toolChangeTime,
+  };
 }
 
 export async function POST(req: Request) {
@@ -85,7 +155,8 @@ export async function POST(req: Request) {
     return NextResponse.json<BuildModelResponse>(
       {
         success: false,
-        error: "请求体无效，请提供 material、tool 和合法的 maxPower。",
+        error:
+          "请求体无效，请提供材料、机床功率、齿轮参数、硬度与成本基础参数。",
       },
       { status: 400 },
     );
@@ -146,6 +217,7 @@ export async function POST(req: Request) {
       notes: [
         "已通过 DeepSeek 生成当前工况模型。",
         `机床最大功率约束已锁定为 ${payload.maxPower.toFixed(1)} kW。`,
+        `粗糙度约束将按精度等级 ${payload.accuracyGrade} 自动绑定。`,
       ],
     });
   } catch (error) {
