@@ -39,6 +39,12 @@ type AiHealthState = {
   detail: string;
 };
 
+type DocState = {
+  loading: boolean;
+  content: string;
+  error: string;
+};
+
 type RankedSolution = {
   index: number;
   decision: DecisionVector;
@@ -56,6 +62,12 @@ const DEFAULT_AI_HEALTH: AiHealthState = {
   checking: false,
   status: "idle",
   detail: "尚未测试 AI 连接。",
+};
+
+const DEFAULT_DOC_STATE: DocState = {
+  loading: true,
+  content: "",
+  error: "",
 };
 
 function normalizeWeights(weights: WeightState): WeightState {
@@ -169,6 +181,7 @@ export default function HobbingOptimizerApp() {
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [runProfileLabel, setRunProfileLabel] = useState<string | null>(null);
   const [aiHealth, setAiHealth] = useState<AiHealthState>(DEFAULT_AI_HEALTH);
+  const [docState, setDocState] = useState<DocState>(DEFAULT_DOC_STATE);
 
   const workerRef = useRef<Worker | null>(null);
   const activeJobRef = useRef<string | null>(null);
@@ -201,6 +214,42 @@ export default function HobbingOptimizerApp() {
   useEffect(() => {
     return () => {
       stopWorker();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const response = await fetch("/docs/declare.md");
+
+        if (!response.ok) {
+          throw new Error(`文档加载失败，状态码 ${response.status}`);
+        }
+
+        const content = await response.text();
+
+        if (!cancelled) {
+          setDocState({
+            loading: false,
+            content,
+            error: "",
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setDocState({
+            loading: false,
+            content: "",
+            error: extractErrorMessage(error),
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -407,7 +456,7 @@ export default function HobbingOptimizerApp() {
               AI + Web Worker + Pareto Front
             </p>
             <h1 className="mt-3 text-3xl font-semibold tracking-tight text-foreground md:text-5xl">
-              AI 驱动的滚齿工艺参数智能优化系统
+              滚齿工艺参数优化系统
             </h1>
             <p className="mt-4 text-sm leading-7 text-muted md:text-base">
               先让 DeepSeek 或本地工艺规则库生成模型，再由浏览器端高保真
@@ -548,6 +597,41 @@ export default function HobbingOptimizerApp() {
                 ))}
               </ul>
             )}
+          </div>
+
+          <div className="mt-6 rounded-[24px] border border-border bg-white/70 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted">
+                  参数说明文档
+                </h3>
+                <p className="mt-2 text-sm leading-6 text-muted">
+                  说明可识别的刀具材料、工件材料，以及机床最大功率约束的作用。
+                </p>
+              </div>
+              <a
+                href="/docs/declare.md"
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-full border border-border bg-white/80 px-4 py-2 text-sm font-semibold text-foreground transition hover:border-accent hover:text-accent"
+              >
+                打开 /docs/declare.md
+              </a>
+            </div>
+
+            <div className="mt-4 rounded-[20px] border border-border/80 bg-[#fffdf7] p-4">
+              {docState.loading ? (
+                <p className="text-sm text-muted">正在加载说明文档...</p>
+              ) : docState.error ? (
+                <p className="text-sm text-[#9a3412]">
+                  文档预览失败：{docState.error}
+                </p>
+              ) : (
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-sm leading-7 text-foreground">
+                  {docState.content}
+                </pre>
+              )}
+            </div>
           </div>
         </div>
 
