@@ -216,17 +216,20 @@ export function computeProcessMetrics(x: number[], config: ModelConfig) {
 
   const pitchDiameter = gear.module * gear.teeth;
   const wholeDepth = 2.25 * gear.module;
-  const axialTravel =
-    gear.faceWidth + constants.travel_clearance_coeff * gear.module + 6;
-  const feedSpeed = Math.max(f * n * z_0, 1e-6);
-  const t_c = axialTravel / feedSpeed;
+  
+  const delta1 = Math.max(20, d_a0 / 3);
+  const delta2 = 3;
+  const L = gear.faceWidth + delta1 + delta2;
+  
+  const denominator = Math.max(f * n * z_0, 1e-6);
+  const t_c = (L * gear.teeth) / denominator;
 
   const v_c = (Math.PI * d_a0 * n) / 1000;
 
-  const Ap = gear.module * gear.faceWidth;
-  const Aw = f * z_0;
+  const Ap = gear.module * f;
+  const Aw = z_0;
   const Kc = clamp(constants.specific_cutting_force, 2000, 4000);
-  const F_cut = Kc * Ap * Aw / 1000;
+  const F_cut = Kc * Ap * Aw;
 
   const P_cut = (F_cut * v_c) / (60 * 1000 * constants.machine_efficiency);
 
@@ -259,20 +262,20 @@ export function computeProcessMetrics(x: number[], config: ModelConfig) {
   const calculationSteps: CalculationSteps = {
     cuttingSpeed: `v_c = (π × d_a0 × n) / 1000 = (3.1416 × ${d_a0.toFixed(0)} × ${n.toFixed(2)}) / 1000 = ${v_c.toFixed(2)} m/min`,
     spindleSpeed: `n = (1000 × v_c) / (π × d_a0) = (1000 × ${v_c.toFixed(2)}) / (3.1416 × ${d_a0.toFixed(0)}) = ${n.toFixed(2)} rpm`,
-    cuttingForce: `F = Kc × Ap × Aw = ${Kc.toFixed(0)} N/mm² × ${Ap.toFixed(2)} mm² × ${Aw.toFixed(2)} = ${F_cut.toFixed(2)} N`,
-    cuttingPower: `P = (F × v_c) / (60000 × η) = (${F_cut.toFixed(2)} × ${v_c.toFixed(2)}) / (60000 × ${constants.machine_efficiency.toFixed(2)}) = ${P_cut.toFixed(3)} kW`,
+    cuttingForce: `F = Kc × Ap × Aw = ${Kc.toFixed(0)} N/mm² × ${Ap.toFixed(3)} mm × ${Aw.toFixed(0)} = ${F_cut.toFixed(1)} N`,
+    cuttingPower: `P = (F × v_c) / (60000 × η) = (${F_cut.toFixed(1)} × ${v_c.toFixed(2)}) / (60000 × ${constants.machine_efficiency.toFixed(2)}) = ${P_cut.toFixed(3)} kW`,
     toolLife: `T = (C / v_c)^(1/m) = (${C.toFixed(0)} / ${v_c.toFixed(2)})^(1/${m.toFixed(2)}) = ${T_tool.toFixed(1)} min`,
     surfaceRoughness: `Ra = 基础值 + 进给影响 + 速度影响 = ${roughness.toFixed(3)} μm`,
-    machiningTime: `T_total = 机动时间 + 辅助时间 + 换刀时间 = ${t_c.toFixed(2)} + ${constants.auxiliary_time.toFixed(2)} + ${toolChangeAllocation.toFixed(2)} = ${T_total.toFixed(2)} min`,
+    machiningTime: `Tc = (L × z) / (f × n × Z0) = (${L.toFixed(1)} × ${gear.teeth}) / (${f.toFixed(2)} × ${n.toFixed(2)} × ${z_0.toFixed(0)}) = ${t_c.toFixed(2)} min; T_total = Tc + 辅助时间 + 换刀时间`,
     costBreakdown: `总成本 = 机床成本 + 刀具成本 + 能耗成本`,
   };
 
   const validationReport: ValidationReport = {
     cuttingSpeed: {
-      valid: v_c >= 30 && v_c <= 80,
-      message: v_c >= 30 && v_c <= 80 
-        ? `切削速度 ${v_c.toFixed(2)} m/min 在推荐范围 30-80 m/min 内`
-        : `切削速度 ${v_c.toFixed(2)} m/min 超出推荐范围 30-80 m/min`,
+      valid: v_c >= 25 && v_c <= 80,
+      message: v_c >= 25 && v_c <= 80 
+        ? `切削速度 ${v_c.toFixed(2)} m/min 在推荐范围 25-80 m/min 内`
+        : `切削速度 ${v_c.toFixed(2)} m/min 超出推荐范围 25-80 m/min`,
     },
     spindleSpeed: {
       valid: true,
@@ -298,7 +301,7 @@ export function computeProcessMetrics(x: number[], config: ModelConfig) {
     },
     overall: {
       feasible: 
-        v_c >= 30 && v_c <= 80 &&
+        v_c >= 25 && v_c <= 80 &&
         roughness <= constraints.max_ra &&
         T_tool >= constraints.min_tool_life_ratio * t_c &&
         P_cut <= constraints.max_power,
@@ -306,19 +309,25 @@ export function computeProcessMetrics(x: number[], config: ModelConfig) {
     },
   };
 
-  if (f >= 1.0 && roughness < 6.3) {
-    validationReport.overall.warnings.push('进给量≥1mm/r时，理论粗糙度应≥Ra6.3μm');
+  if (v_c < 25 || v_c > 80) {
+    validationReport.overall.warnings.push('切削速度建议在25-80m/min范围');
   }
-  if (v_c < 30 || v_c > 80) {
-    validationReport.overall.warnings.push('切削速度建议在30-80m/min范围');
+  if (f >= 1.0) {
+    validationReport.overall.warnings.push('进给量≥1mm/r，理论粗糙度已按≥Ra6.3μm设定');
+  }
+  if (z_0 >= 3 && gear.accuracyGrade <= 8) {
+    validationReport.overall.warnings.push('3头及以上滚刀用于8级精度齿轮存在精度风险，建议使用单头或双头滚刀');
   }
 
   return {
     constrained,
     pitchDiameter,
     wholeDepth,
-    axialTravel,
-    feedSpeed,
+    delta1,
+    delta2,
+    L,
+    axialTravel: L,
+    feedSpeed: f * n * z_0,
     removedVolume,
     materialRemovalRate,
     v_c,
@@ -346,9 +355,10 @@ export function hobbingObjective(
 
   const energy = (constants.P_idle * T_total + P_cut * t_c) / 60;
 
-  const sharpeningTimes = Math.floor(cost.toolSharpeningLife / (1 / Math.max(toolWearRatio, 0.001)));
-  const effectiveToolLife = 1 / toolWearRatio;
-  const totalToolCostPerPiece = (cost.toolPrice + sharpeningTimes * cost.toolSharpeningCost) / effectiveToolLife;
+  const piecesPerToolLife = 1 / Math.max(toolWearRatio, 0.001);
+  const sharpeningCycles = Math.max(0, Math.floor(piecesPerToolLife / cost.toolSharpeningLife));
+  const totalToolCost = cost.toolPrice + sharpeningCycles * cost.toolSharpeningCost;
+  const totalToolCostPerPiece = totalToolCost / piecesPerToolLife;
 
   const machineCost = cost.machineRate * T_total;
   const toolCost = totalToolCostPerPiece;

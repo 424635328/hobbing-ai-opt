@@ -249,6 +249,8 @@ function buildBounds(
   const feedLb = clamp(input.module * 0.12, 0.18, 0.65);
   const feedUb = clamp(input.module * 0.32 * toolFeedFactor, 0.45, 1.6);
 
+  const maxTeeth = input.accuracyGrade <= 8 ? 2 : 3;
+
   return {
     lb: [
       Math.round(diameterLb),
@@ -258,7 +260,7 @@ function buildBounds(
     ],
     ub: [
       Math.round(diameterUb),
-      3,
+      maxTeeth,
       roundToSafe(Math.max(nUb, nLb + 40), 2),
       roundToSafe(Math.max(feedUb, feedLb + 0.1), 2),
     ],
