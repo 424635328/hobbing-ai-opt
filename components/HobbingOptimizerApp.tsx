@@ -33,6 +33,12 @@ type WeightState = {
   roughness: number;
 };
 
+type AiHealthState = {
+  checking: boolean;
+  status: string;
+  detail: string;
+};
+
 type RankedSolution = {
   index: number;
   decision: DecisionVector;
@@ -44,6 +50,12 @@ const DEFAULT_WEIGHTS: WeightState = {
   energy: 100,
   cost: 100,
   roughness: 100,
+};
+
+const DEFAULT_AI_HEALTH: AiHealthState = {
+  checking: false,
+  status: "idle",
+  detail: "尚未测试 AI 连接。",
 };
 
 function normalizeWeights(weights: WeightState): WeightState {
@@ -156,6 +168,7 @@ export default function HobbingOptimizerApp() {
   const [weights, setWeights] = useState<WeightState>(DEFAULT_WEIGHTS);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [runProfileLabel, setRunProfileLabel] = useState<string | null>(null);
+  const [aiHealth, setAiHealth] = useState<AiHealthState>(DEFAULT_AI_HEALTH);
 
   const workerRef = useRef<Worker | null>(null);
   const activeJobRef = useRef<string | null>(null);
@@ -247,6 +260,35 @@ export default function HobbingOptimizerApp() {
       setStatus(`模型建立失败：${extractErrorMessage(error)}`);
     } finally {
       setIsBuilding(false);
+    }
+  }
+
+  async function handleCheckAiHealth() {
+    setAiHealth({
+      checking: true,
+      status: "checking",
+      detail: "正在测试 DeepSeek 连通性...",
+    });
+
+    try {
+      const response = await fetch("/api/ai-health", { method: "GET" });
+      const result = (await response.json()) as {
+        success: boolean;
+        status: string;
+        message: string;
+      };
+
+      setAiHealth({
+        checking: false,
+        status: result.status,
+        detail: result.message,
+      });
+    } catch (error) {
+      setAiHealth({
+        checking: false,
+        status: "request_failed",
+        detail: `AI 连通性测试失败：${extractErrorMessage(error)}`,
+      });
     }
   }
 
@@ -466,6 +508,20 @@ export default function HobbingOptimizerApp() {
               {config
                 ? `刀具寿命系数 ${config.constants.tool_life_coeff.toFixed(0)}，切削力系数 ${config.constants.power_coeff.toFixed(4)}`
                 : "建立模型后将在这里展示核心系数。"}
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <button
+              type="button"
+              onClick={handleCheckAiHealth}
+              disabled={aiHealth.checking}
+              className="rounded-full border border-border bg-white/80 px-5 py-3 text-sm font-semibold text-foreground transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {aiHealth.checking ? "测试中..." : "测试 AI 连接"}
+            </button>
+            <div className="rounded-full border border-border bg-white/75 px-4 py-3 text-sm text-muted">
+              {aiHealth.detail}
             </div>
           </div>
 

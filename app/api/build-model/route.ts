@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
 
 import type {
   BuildModelRequest,
   BuildModelResponse,
 } from "@/lib/hobbing-model";
+import { createDeepSeekClient, getDeepSeekApiKey } from "@/lib/deepseek";
 import {
   buildFallbackModelConfig,
   validateDeepSeekConfig,
@@ -92,7 +92,7 @@ export async function POST(req: Request) {
   }
 
   const fallback = buildFallbackModelConfig(payload);
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const apiKey = getDeepSeekApiKey();
 
   if (!apiKey) {
     return NextResponse.json<BuildModelResponse>({
@@ -107,10 +107,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const client = new OpenAI({
-      apiKey,
-      baseURL: "https://api.deepseek.com",
-    });
+    const client = createDeepSeekClient(apiKey);
 
     const response = await client.chat.completions.create({
       model: "deepseek-chat",
