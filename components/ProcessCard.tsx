@@ -9,6 +9,8 @@ import type {
 interface ProcessCardProps {
   request: BuildModelRequest;
   profileLabel: string;
+  algorithmLabel: string;
+  algorithmDescriptor: string;
   source: ModelSource | null;
   notes: string[];
   config: ModelConfig | null;
@@ -39,6 +41,8 @@ function formatNumber(value: number | null, digits: number): string {
 export default function ProcessCard({
   request,
   profileLabel,
+  algorithmLabel,
+  algorithmDescriptor,
   source,
   notes,
   config,
@@ -63,6 +67,8 @@ export default function ProcessCard({
         <div className="rounded-2xl border border-border bg-white/70 px-4 py-3 text-sm leading-6 text-muted">
           <div>生成时间：{formatDateTime(generatedAt)}</div>
           <div>运行档位：{profileLabel}</div>
+          <div>求解算法：{algorithmLabel}</div>
+          <div>算法来源：{algorithmDescriptor}</div>
           <div>
             模型来源：
             {source === "deepseek"
@@ -176,7 +182,7 @@ export default function ProcessCard({
             </div>
           ) : (
             <p className="mt-4 text-sm leading-6 text-muted">
-              尚未获得推荐解。请先完成模型建立并运行 MOFATA 优化。
+              尚未获得推荐解。请先完成模型建立并运行所选优化算法。
             </p>
           )}
         </section>

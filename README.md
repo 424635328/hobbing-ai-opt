@@ -7,17 +7,20 @@
 1. 输入工件材料、刀具材料、机床功率约束
 2. 调用 DeepSeek 动态建模
 3. 无 Key 或上游失败时自动回退到本地规则库
-4. 在浏览器端 Web Worker 中运行高保真 MOFATA
-5. 展示 3D Pareto 前沿
-6. 用权重滑条计算推荐解
-7. 生成可打印工艺卡
+4. 手动选择求解算法，或上传 `.m` 文件让 AI 映射到受支持算法
+5. 在浏览器端 Web Worker 中运行 MOFATA / MOGWO / MOPSO
+6. 展示 3D Pareto 前沿
+7. 用权重滑条通过 TOPSIS 计算推荐解
+8. 生成可打印工艺卡
 
 ## 功能概览
 
 - 动态建模 API：`app/api/build-model/route.ts`
+- MATLAB 算法转换 API：`app/api/convert-matlab/route.ts`
 - 共享数学模型：`lib/hobbing-model.ts`
 - 本地工艺规则库：`lib/material-knowledge.ts`
-- 高保真 MOFATA Worker：`workers/mofata.worker.ts`
+- MATLAB 算法识别器：`lib/matlab-algorithm-conversion.ts`
+- 多算法 Worker：`workers/mofata.worker.ts`
 - 主界面：`components/HobbingOptimizerApp.tsx`
 - 3D 可视化：`components/ParetoChart*.tsx`
 - 工艺卡打印：`components/ProcessCard.tsx`
@@ -44,6 +47,7 @@ DEEPSEEK_API_KEY=sk-xxxx
 说明：
 
 - 配置 `DEEPSEEK_API_KEY` 后，`/api/build-model` 会优先调用 DeepSeek
+- 配置 `DEEPSEEK_API_KEY` 后，`/api/convert-matlab` 也会优先调用 DeepSeek 识别 `.m` 算法文件
 - 未配置时系统不会报废，而是自动切换到本地规则库，适合课堂演示和联调
 - 仓库中提供了 [.env.example](./.env.example) 作为占位模板
 
@@ -77,10 +81,35 @@ npm run start
 ## 界面说明
 
 - 左侧第一块：工艺输入与 AI / fallback 建模
-- 左侧第二块：运行档位、MOFATA 进度、权重偏好
+- 左侧第二块：算法选择、`.m` 文件转换、运行档位与优化进度
 - 右侧大图：3D Pareto 前沿
-- 右侧侧栏：推荐解与 Top 5 候选解
+- 右侧侧栏：基于 TOPSIS 的推荐解与 Top 5 候选解
 - 底部：可打印工艺卡
+
+## 文档查看
+
+- 首页只保留文档入口按钮，不再直接内嵌全文
+- 文档渲染页为 `/docs/declare`
+- 原始 Markdown 文件仍保留在 `/docs/declare.md`
+
+## 支持算法
+
+- `MOFATA`
+  - 改进海市蜃楼多目标算法
+  - 适合当前滚齿工艺问题的高保真求解
+- `MOGWO`
+  - 多目标灰狼优化算法
+  - 使用 Alpha / Beta / Delta 三层领导狼引导更新
+- `MOPSO`
+  - 多目标粒子群优化算法
+  - 使用 PBest / GBest 与速度向量更新
+
+## MATLAB `.m` 文件转换
+
+- 前端允许上传 `.m` 文件并调用 `/api/convert-matlab`
+- DeepSeek 可用时，优先由 AI 判断文件更接近 `MOFATA / MOGWO / MOPSO` 中哪一种
+- AI 不可用或返回异常时，系统会回退到本地规则器，根据 `Levy`、`GreyWolves`、`PBest` 等特征词启发式识别
+- 转换结果会被映射为浏览器 Worker 可执行的受支持算法标识，而不是直接执行原始 MATLAB 代码
 
 ## 运行档位
 
@@ -108,6 +137,7 @@ npm run build
 - `npm run build`
 - route handler fallback 直调验证
 - 数学模型脚本验证
+- 多算法与 `.m` 转换前端链路静态校验
 
 ## 已知说明
 

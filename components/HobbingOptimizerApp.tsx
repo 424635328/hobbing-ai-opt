@@ -6,6 +6,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type ChangeEvent,
 } from "react";
 
 import ParetoChart from "@/components/ParetoChart";
@@ -21,6 +22,11 @@ import {
 } from "@/lib/hobbing-model";
 import {
   OPTIMIZATION_PROFILES,
+  SUPPORTED_ALGORITHMS,
+  type ConvertMatlabAlgorithmResponse,
+  type MatlabAlgorithmConfidence,
+  type MatlabAlgorithmConversionSource,
+  type OptimizationAlgorithm,
   type OptimizationProfile,
   type OptimizationStats,
   type OptimizationWorkerCommand,
@@ -39,17 +45,20 @@ type AiHealthState = {
   detail: string;
 };
 
-type DocState = {
-  loading: boolean;
-  content: string;
-  error: string;
-};
-
 type RankedSolution = {
   index: number;
   decision: DecisionVector;
   objectives: ObjectiveVector;
   score: number;
+};
+
+type MatlabConversionState = {
+  fileName: string;
+  source: MatlabAlgorithmConversionSource | null;
+  confidence: MatlabAlgorithmConfidence | null;
+  notes: string[];
+  detail: string;
+  normalizedFormat: string;
 };
 
 const DEFAULT_WEIGHTS: WeightState = {
@@ -64,10 +73,13 @@ const DEFAULT_AI_HEALTH: AiHealthState = {
   detail: "尚未测试 AI 连接。",
 };
 
-const DEFAULT_DOC_STATE: DocState = {
-  loading: true,
-  content: "",
-  error: "",
+const DEFAULT_MATLAB_CONVERSION: MatlabConversionState = {
+  fileName: "",
+  source: null,
+  confidence: null,
+  notes: [],
+  detail: "尚未上传 MATLAB 算法文件。",
+  normalizedFormat: "",
 };
 
 function normalizeWeights(weights: WeightState): WeightState {
@@ -98,27 +110,49 @@ function rankSolutions(
   }
 
   const normalizedWeights = normalizeWeights(weights);
-  const mins = [Infinity, Infinity, Infinity];
-  const maxs = [-Infinity, -Infinity, -Infinity];
-
-  for (const objective of pf) {
-    for (let i = 0; i < 3; i += 1) {
-      mins[i] = Math.min(mins[i], objective[i]);
-      maxs[i] = Math.max(maxs[i], objective[i]);
-    }
-  }
+  const dimensions = 3;
+  const normDenominators = Array.from({ length: dimensions }, (_, axis) =>
+    Math.sqrt(
+      pf.reduce((sum, objective) => sum + objective[axis] * objective[axis], 0),
+    ),
+  );
+  const weightedNormalized = pf.map((objective) =>
+    objective.map((value, axis) => {
+      const denominator = normDenominators[axis];
+      const normalized = denominator <= 0 ? 0 : value / denominator;
+      const weight =
+        axis === 0
+          ? normalizedWeights.energy
+          : axis === 1
+            ? normalizedWeights.cost
+            : normalizedWeights.roughness;
+      return normalized * weight;
+    }),
+  );
+  const positiveIdeal = Array.from({ length: dimensions }, (_, axis) =>
+    Math.min(...weightedNormalized.map((objective) => objective[axis])),
+  );
+  const negativeIdeal = Array.from({ length: dimensions }, (_, axis) =>
+    Math.max(...weightedNormalized.map((objective) => objective[axis])),
+  );
 
   return pf
     .map((objective, index) => {
-      const normalized = objective.map((value, axis) => {
-        const span = maxs[axis] - mins[axis];
-        return span === 0 ? 0 : (value - mins[axis]) / span;
-      });
-
-      const score =
-        normalized[0] * normalizedWeights.energy +
-        normalized[1] * normalizedWeights.cost +
-        normalized[2] * normalizedWeights.roughness;
+      const weightedObjective = weightedNormalized[index];
+      const positiveDistance = Math.sqrt(
+        weightedObjective.reduce(
+          (sum, value, axis) => sum + (value - positiveIdeal[axis]) ** 2,
+          0,
+        ),
+      );
+      const negativeDistance = Math.sqrt(
+        weightedObjective.reduce(
+          (sum, value, axis) => sum + (value - negativeIdeal[axis]) ** 2,
+          0,
+        ),
+      );
+      const denominator = positiveDistance + negativeDistance;
+      const score = denominator <= 0 ? 0.5 : negativeDistance / denominator;
 
       return {
         index,
@@ -127,12 +161,28 @@ function rankSolutions(
         score,
       };
     })
-    .sort((left, right) => left.score - right.score)
+    .sort((left, right) => right.score - left.score)
     .slice(0, 5);
 }
 
 function formatSeconds(milliseconds: number): string {
   return `${(milliseconds / 1000).toFixed(milliseconds >= 10000 ? 1 : 2)} s`;
+}
+
+function formatConfidence(confidence: MatlabAlgorithmConfidence | null): string {
+  if (confidence === "high") {
+    return "高";
+  }
+
+  if (confidence === "medium") {
+    return "中";
+  }
+
+  if (confidence === "low") {
+    return "低";
+  }
+
+  return "待识别";
 }
 
 function safeMaxPowerValue(value: string): number {
@@ -161,11 +211,31 @@ function extractErrorMessage(error: unknown): string {
   return "未知错误";
 }
 
+function buildAlgorithmDescriptor(
+  conversion: MatlabConversionState,
+  algorithmLabel: string,
+): string {
+  if (!conversion.fileName) {
+    return "手动选择";
+  }
+
+  if (conversion.source === "deepseek") {
+    return `DeepSeek 转换 / ${conversion.fileName}`;
+  }
+
+  if (conversion.source === "fallback") {
+    return `规则转换 / ${conversion.fileName}`;
+  }
+
+  return `已上传文件 / ${conversion.fileName} / 当前算法 ${algorithmLabel}`;
+}
+
 export default function HobbingOptimizerApp() {
   const [material, setMaterial] = useState("40Cr");
   const [tool, setTool] = useState("W18Cr4V");
   const [maxPower, setMaxPower] = useState("12.0");
   const [profile, setProfile] = useState<OptimizationProfile>("preview");
+  const [algorithm, setAlgorithm] = useState<OptimizationAlgorithm>("mofata");
   const [config, setConfig] = useState<ModelConfig | null>(null);
   const [modelSource, setModelSource] = useState<ModelSource | null>(null);
   const [modelNotes, setModelNotes] = useState<string[]>([]);
@@ -173,6 +243,7 @@ export default function HobbingOptimizerApp() {
   const [status, setStatus] = useState("等待建立工艺模型。");
   const [isBuilding, setIsBuilding] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [isConvertingAlgorithm, setIsConvertingAlgorithm] = useState(false);
   const [progress, setProgress] = useState(0);
   const [pfData, setPfData] = useState<ObjectiveVector[]>([]);
   const [psData, setPsData] = useState<DecisionVector[]>([]);
@@ -180,8 +251,13 @@ export default function HobbingOptimizerApp() {
   const [weights, setWeights] = useState<WeightState>(DEFAULT_WEIGHTS);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [runProfileLabel, setRunProfileLabel] = useState<string | null>(null);
+  const [runAlgorithmLabel, setRunAlgorithmLabel] = useState<string | null>(null);
+  const [runAlgorithmDescriptor, setRunAlgorithmDescriptor] = useState<string | null>(null);
   const [aiHealth, setAiHealth] = useState<AiHealthState>(DEFAULT_AI_HEALTH);
-  const [docState, setDocState] = useState<DocState>(DEFAULT_DOC_STATE);
+  const [matlabFile, setMatlabFile] = useState<File | null>(null);
+  const [matlabConversion, setMatlabConversion] = useState<MatlabConversionState>(
+    DEFAULT_MATLAB_CONVERSION,
+  );
 
   const workerRef = useRef<Worker | null>(null);
   const activeJobRef = useRef<string | null>(null);
@@ -189,12 +265,17 @@ export default function HobbingOptimizerApp() {
   const rankedSolutions = rankSolutions(pfData, psData, weights);
   const recommendedSolution = rankedSolutions[0] ?? null;
   const activeProfile = OPTIMIZATION_PROFILES[profile];
+  const activeAlgorithm = SUPPORTED_ALGORITHMS[algorithm];
   const normalizedWeights = normalizeWeights(weights);
   const formSnapshot: BuildModelRequest = {
     material,
     tool,
     maxPower: safeMaxPowerValue(maxPower),
   };
+  const currentAlgorithmDescriptor = buildAlgorithmDescriptor(
+    matlabConversion,
+    activeAlgorithm.label,
+  );
 
   function stopWorker() {
     workerRef.current?.terminate();
@@ -209,47 +290,13 @@ export default function HobbingOptimizerApp() {
     setStats(null);
     setGeneratedAt(null);
     setRunProfileLabel(null);
+    setRunAlgorithmLabel(null);
+    setRunAlgorithmDescriptor(null);
   }
 
   useEffect(() => {
     return () => {
       stopWorker();
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const response = await fetch("/docs/declare.md");
-
-        if (!response.ok) {
-          throw new Error(`文档加载失败，状态码 ${response.status}`);
-        }
-
-        const content = await response.text();
-
-        if (!cancelled) {
-          setDocState({
-            loading: false,
-            content,
-            error: "",
-          });
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setDocState({
-            loading: false,
-            content: "",
-            error: extractErrorMessage(error),
-          });
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
     };
   }, []);
 
@@ -302,8 +349,8 @@ export default function HobbingOptimizerApp() {
       });
       setStatus(
         result.source === "deepseek"
-          ? "DeepSeek 建模完成，可以开始运行高保真 MOFATA。"
-          : "已切换到本地规则库，当前模型可直接用于演示。",
+          ? `DeepSeek 建模完成，可以开始运行 ${activeAlgorithm.label}。`
+          : `已切换到本地规则库，当前模型可直接用于 ${activeAlgorithm.label} 演示。`,
       );
     } catch (error) {
       setStatus(`模型建立失败：${extractErrorMessage(error)}`);
@@ -341,6 +388,91 @@ export default function HobbingOptimizerApp() {
     }
   }
 
+  function handleAlgorithmChange(nextAlgorithm: OptimizationAlgorithm) {
+    setAlgorithm(nextAlgorithm);
+    setStatus(`当前求解算法已切换为 ${SUPPORTED_ALGORITHMS[nextAlgorithm].label}。`);
+  }
+
+  function handleMatlabFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null;
+    setMatlabFile(file);
+
+    if (!file) {
+      setMatlabConversion(DEFAULT_MATLAB_CONVERSION);
+      return;
+    }
+
+    setMatlabConversion({
+      fileName: file.name,
+      source: null,
+      confidence: null,
+      notes: ["点击“AI 转换 .m 算法文件”后，系统会识别并映射到受支持的算法。"],
+      detail: `已选择文件 ${file.name}，大小 ${(file.size / 1024).toFixed(1)} KB。`,
+      normalizedFormat: "",
+    });
+  }
+
+  async function handleConvertMatlabAlgorithm() {
+    if (!matlabFile) {
+      setStatus("请先上传一个 MATLAB .m 算法文件。");
+      return;
+    }
+
+    if (!matlabFile.name.toLowerCase().endsWith(".m")) {
+      setStatus("当前仅支持上传 .m 文件。");
+      return;
+    }
+
+    setIsConvertingAlgorithm(true);
+    setStatus("AI 正在分析 MATLAB 算法文件并转换为受支持格式...");
+
+    try {
+      const fileContent = await matlabFile.text();
+
+      if (!fileContent.trim()) {
+        throw new Error("上传的 .m 文件内容为空。");
+      }
+
+      const response = await fetch("/api/convert-matlab", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          fileName: matlabFile.name,
+          fileContent,
+        }),
+      });
+
+      const result = (await response.json()) as ConvertMatlabAlgorithmResponse;
+
+      if (!response.ok || !result.success) {
+        throw new Error(
+          result.success ? "接口返回异常，但未提供错误信息。" : result.error,
+        );
+      }
+
+      const algorithmLabel = SUPPORTED_ALGORITHMS[result.algorithm].label;
+
+      setAlgorithm(result.algorithm);
+      setMatlabConversion({
+        fileName: matlabFile.name,
+        source: result.source,
+        confidence: result.confidence,
+        notes: result.notes,
+        detail: `${matlabFile.name} 已映射为 ${algorithmLabel}。`,
+        normalizedFormat: `${result.normalizedFormat.supportedRuntime} / ${result.normalizedFormat.algorithm}`,
+      });
+      setStatus(
+        `${result.source === "deepseek" ? "AI" : "规则识别"} 已将 ${matlabFile.name} 转换为 ${algorithmLabel}，现在可以直接运行优化。`,
+      );
+    } catch (error) {
+      setStatus(`算法转换失败：${extractErrorMessage(error)}`);
+    } finally {
+      setIsConvertingAlgorithm(false);
+    }
+  }
+
   function handleRunOptimization() {
     if (!config) {
       setStatus("请先建立工艺模型。");
@@ -350,7 +482,16 @@ export default function HobbingOptimizerApp() {
     stopWorker();
     resetOptimizationState();
     setIsRunning(true);
-    setRunProfileLabel(activeProfile.label);
+
+    const chosenAlgorithm = algorithm;
+    const chosenAlgorithmLabel = activeAlgorithm.label;
+    const chosenProfileLabel = activeProfile.label;
+    const chosenAlgorithmDescriptor = currentAlgorithmDescriptor;
+    const chosenMaxFEs = activeProfile.Max_FEs;
+
+    setRunProfileLabel(chosenProfileLabel);
+    setRunAlgorithmLabel(chosenAlgorithmLabel);
+    setRunAlgorithmDescriptor(chosenAlgorithmDescriptor);
 
     const jobId = makeJobId();
     const worker = new Worker(
@@ -360,7 +501,7 @@ export default function HobbingOptimizerApp() {
 
     workerRef.current = worker;
     activeJobRef.current = jobId;
-    setStatus(`${activeProfile.label} 已准备启动...`);
+    setStatus(`${chosenAlgorithmLabel} / ${chosenProfileLabel} 已准备启动...`);
 
     worker.onmessage = (event: MessageEvent<OptimizationWorkerEvent>) => {
       const data = event.data;
@@ -370,8 +511,10 @@ export default function HobbingOptimizerApp() {
       }
 
       if (data.type === "start") {
+        const startedAlgorithm = SUPPORTED_ALGORITHMS[data.algorithm];
+
         setStatus(
-          `${data.settings.label} 已启动，种群规模 ${data.settings.N}，最大评估 ${data.settings.Max_FEs}。`,
+          `${startedAlgorithm.label} 已启动，种群规模 ${data.settings.N}，最大评估 ${data.settings.Max_FEs}。`,
         );
         return;
       }
@@ -383,7 +526,7 @@ export default function HobbingOptimizerApp() {
           elapsedMs: data.elapsedMs,
         });
         setStatus(
-          `${activeProfile.label} 求解中：${data.feCount}/${activeProfile.Max_FEs}，当前档案 ${data.archiveSize} 个。`,
+          `${chosenAlgorithmLabel} 求解中：${data.feCount}/${chosenMaxFEs}，当前档案 ${data.archiveSize} 个。`,
         );
         startTransition(() => {
           setProgress(data.progress);
@@ -393,27 +536,32 @@ export default function HobbingOptimizerApp() {
       }
 
       if (data.type === "done") {
+        const finishedAlgorithm = SUPPORTED_ALGORITHMS[data.algorithm];
+
         setIsRunning(false);
         setStats(data.stats);
         setGeneratedAt(new Date().toISOString());
         setStatus(
-          `优化完成，已得到 ${data.stats.archiveSize} 个非支配解，可进行权重决策与打印工艺卡。`,
+          `${finishedAlgorithm.label} 优化完成，已得到 ${data.stats.archiveSize} 个非支配解，可进行权重决策与打印工艺卡。`,
         );
         startTransition(() => {
           setProgress(100);
           setPfData(data.finalPF);
           setPsData(data.finalPS);
         });
+
         if (workerRef.current === worker) {
           worker.terminate();
           workerRef.current = null;
           activeJobRef.current = null;
         }
+
         return;
       }
 
       setIsRunning(false);
       setStatus(`优化失败：${data.error}`);
+
       if (workerRef.current === worker) {
         worker.terminate();
         workerRef.current = null;
@@ -438,6 +586,7 @@ export default function HobbingOptimizerApp() {
       jobId,
       config,
       profile,
+      algorithm: chosenAlgorithm,
     };
 
     worker.postMessage(message);
@@ -459,17 +608,26 @@ export default function HobbingOptimizerApp() {
               滚齿工艺参数优化系统
             </h1>
             <p className="mt-4 text-sm leading-7 text-muted md:text-base">
-              先让 DeepSeek 或本地工艺规则库生成模型，再由浏览器端高保真
-              MOFATA 在后台完成多目标寻优，最后通过 3D Pareto 前沿与权重推荐解输出可打印工艺卡。
+              先让 DeepSeek 或本地工艺规则库生成模型，再由浏览器端根据你选择的
+              MOFATA、MOGWO 或 MOPSO 在后台完成多目标寻优，最后通过 3D Pareto
+              前沿与权重推荐解输出可打印工艺卡。
             </p>
           </div>
-          <div className="grid gap-3 rounded-[24px] border border-border bg-white/75 p-4 text-sm text-muted md:grid-cols-3">
+          <div className="grid gap-3 rounded-[24px] border border-border bg-white/75 p-4 text-sm text-muted md:grid-cols-4">
             <div>
               <div className="text-xs uppercase tracking-[0.18em] text-muted">
                 当前档位
               </div>
               <div className="mt-1 font-semibold text-foreground">
                 {activeProfile.label}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs uppercase tracking-[0.18em] text-muted">
+                当前算法
+              </div>
+              <div className="mt-1 font-semibold text-foreground">
+                {activeAlgorithm.label}
               </div>
             </div>
             <div>
@@ -606,31 +764,21 @@ export default function HobbingOptimizerApp() {
                   参数说明文档
                 </h3>
                 <p className="mt-2 text-sm leading-6 text-muted">
-                  说明可识别的刀具材料、工件材料，以及机床最大功率约束的作用。
+                  说明材料输入、功率约束，以及多算法 `.m` 转换入口的用途。
                 </p>
               </div>
               <a
-                href="/docs/declare.md"
+                href="/docs/declare"
                 target="_blank"
                 rel="noreferrer"
                 className="rounded-full border border-border bg-white/80 px-4 py-2 text-sm font-semibold text-foreground transition hover:border-accent hover:text-accent"
               >
-                打开 /docs/declare.md
+                打开参数说明页
               </a>
             </div>
-
-            <div className="mt-4 rounded-[20px] border border-border/80 bg-[#fffdf7] p-4">
-              {docState.loading ? (
-                <p className="text-sm text-muted">正在加载说明文档...</p>
-              ) : docState.error ? (
-                <p className="text-sm text-[#9a3412]">
-                  文档预览失败：{docState.error}
-                </p>
-              ) : (
-                <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-sm leading-7 text-foreground">
-                  {docState.content}
-                </pre>
-              )}
+            <div className="mt-4 rounded-[20px] border border-border/80 bg-[#fffdf7] p-4 text-sm leading-7 text-muted">
+              主页面不再直接内嵌文档内容。点击上方按钮后会打开独立的 TSX 文档页面，并从
+              `/docs/declare.md` 读取源码后进行渲染。
             </div>
           </div>
         </div>
@@ -642,7 +790,7 @@ export default function HobbingOptimizerApp() {
                 Step 2
               </p>
               <h2 className="mt-2 text-2xl font-semibold text-foreground">
-                高保真 MOFATA 求解与偏好设置
+                可选算法求解与偏好设置
               </h2>
             </div>
             <span className="rounded-full bg-accent-warm/12 px-4 py-2 text-xs font-semibold text-accent-warm">
@@ -651,6 +799,109 @@ export default function HobbingOptimizerApp() {
           </div>
 
           <div className="mt-6 grid gap-4">
+            <div className="grid gap-2">
+              <span className="text-sm font-medium text-foreground">求解算法</span>
+              <div className="grid gap-3 md:grid-cols-3">
+                {(
+                  Object.entries(SUPPORTED_ALGORITHMS) as Array<
+                    [OptimizationAlgorithm, typeof activeAlgorithm]
+                  >
+                ).map(([key, settings]) => (
+                  <label
+                    key={key}
+                    className={`cursor-pointer rounded-[24px] border p-4 transition ${
+                      algorithm === key
+                        ? "border-accent bg-accent/8"
+                        : "border-border bg-white/75"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="algorithm"
+                      value={key}
+                      checked={algorithm === key}
+                      onChange={() => handleAlgorithmChange(key)}
+                      className="sr-only"
+                    />
+                    <div className="font-semibold text-foreground">{settings.label}</div>
+                    <p className="mt-2 text-sm leading-6 text-muted">
+                      {settings.description}
+                    </p>
+                    <p className="mt-3 text-xs font-medium uppercase tracking-[0.16em] text-muted">
+                      MATLAB Hint: {settings.matlabHints.join(" / ")}
+                    </p>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-[24px] border border-border bg-white/70 p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted">
+                    MATLAB 算法文件转换
+                  </h3>
+                  <p className="mt-2 text-sm leading-6 text-muted">
+                    上传 `.m` 文件后，系统会优先调用 DeepSeek 识别并映射到当前支持的
+                    MOFATA、MOGWO 或 MOPSO。
+                  </p>
+                </div>
+                <span className="rounded-full bg-accent/8 px-3 py-1 text-xs font-semibold text-accent">
+                  当前算法：{activeAlgorithm.label}
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
+                <label className="grid gap-2">
+                  <span className="text-sm font-medium text-foreground">
+                    上传 `.m` 文件
+                  </span>
+                  <input
+                    type="file"
+                    accept=".m"
+                    onChange={handleMatlabFileChange}
+                    className="rounded-2xl border border-border bg-white/80 px-4 py-3 text-sm text-foreground file:mr-4 file:rounded-full file:border-0 file:bg-accent/12 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-accent"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={handleConvertMatlabAlgorithm}
+                  disabled={isConvertingAlgorithm || !matlabFile}
+                  className="self-end rounded-full border border-border bg-white/80 px-5 py-3 text-sm font-semibold text-foreground transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {isConvertingAlgorithm ? "转换中..." : "AI 转换 .m 算法文件"}
+                </button>
+              </div>
+
+              <div className="mt-4 rounded-[20px] border border-border/80 bg-[#fffdf7] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+                  <div className="font-medium text-foreground">
+                    {matlabConversion.fileName || "尚未选择文件"}
+                  </div>
+                  <div className="text-muted">
+                    置信度：{formatConfidence(matlabConversion.confidence)}
+                    {matlabConversion.source && ` / 来源：${matlabConversion.source}`}
+                  </div>
+                </div>
+                <p className="mt-3 text-sm leading-6 text-foreground">
+                  {matlabConversion.detail}
+                </p>
+                <p className="mt-2 text-sm text-muted">
+                  受支持格式：
+                  {matlabConversion.normalizedFormat || "待转换"}
+                </p>
+                {matlabConversion.notes.length > 0 && (
+                  <ul className="mt-4 grid gap-2 text-sm leading-6 text-muted">
+                    {matlabConversion.notes.map((note) => (
+                      <li key={note} className="rounded-2xl bg-accent/6 px-4 py-3">
+                        {note}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+
             <div className="grid gap-2">
               <span className="text-sm font-medium text-foreground">运行档位</span>
               <div className="grid gap-3 md:grid-cols-2">
@@ -690,10 +941,12 @@ export default function HobbingOptimizerApp() {
             <button
               type="button"
               onClick={handleRunOptimization}
-              disabled={!config || isBuilding}
+              disabled={!config || isBuilding || isConvertingAlgorithm}
               className="rounded-full bg-accent-warm px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#9f5716] disabled:cursor-not-allowed disabled:bg-accent-warm/50"
             >
-              {isRunning ? "重新运行当前档位" : "启动 MOFATA 优化"}
+              {isRunning
+                ? `重新运行 ${activeAlgorithm.label}`
+                : `启动 ${activeAlgorithm.label} 优化`}
             </button>
 
             <div className="rounded-[24px] border border-border bg-white/70 p-5">
@@ -842,6 +1095,12 @@ export default function HobbingOptimizerApp() {
                 </p>
                 <div className="mt-3 grid gap-3 text-sm text-muted">
                   <div className="flex items-center justify-between gap-4">
+                    <span>算法</span>
+                    <span className="font-semibold text-foreground">
+                      {runAlgorithmLabel ?? activeAlgorithm.label}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
                     <span>决策变量</span>
                     <span className="font-mono font-semibold text-foreground">
                       [{recommendedSolution.decision.map((item) => item.toFixed(2)).join(", ")}]
@@ -854,7 +1113,7 @@ export default function HobbingOptimizerApp() {
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-4">
-                    <span>综合评分</span>
+                    <span>TOPSIS 综合评分</span>
                     <span className="font-mono font-semibold text-foreground">
                       {recommendedSolution.score.toFixed(4)}
                     </span>
@@ -880,7 +1139,7 @@ export default function HobbingOptimizerApp() {
                         方案 {index + 1}
                       </span>
                       <span className="font-mono text-muted">
-                        score {solution.score.toFixed(4)}
+                        TOPSIS {solution.score.toFixed(4)}
                       </span>
                     </div>
                     <div className="mt-3 grid gap-2 text-muted">
@@ -897,7 +1156,7 @@ export default function HobbingOptimizerApp() {
             </div>
           ) : (
             <div className="mt-6 rounded-[24px] border border-dashed border-border bg-white/70 p-6 text-sm leading-7 text-muted">
-              完成优化后，系统会根据你设置的能耗、成本、粗糙度权重自动归一化打分，并高亮最优推荐解。
+              完成优化后，系统会根据你设置的能耗、成本、粗糙度权重使用 TOPSIS 进行综合评估，并高亮最优推荐解。
             </div>
           )}
         </div>
@@ -907,6 +1166,8 @@ export default function HobbingOptimizerApp() {
         <ProcessCard
           request={modelRequest ?? formSnapshot}
           profileLabel={runProfileLabel ?? activeProfile.label}
+          algorithmLabel={runAlgorithmLabel ?? activeAlgorithm.label}
+          algorithmDescriptor={runAlgorithmDescriptor ?? currentAlgorithmDescriptor}
           source={modelSource}
           notes={modelNotes}
           config={config}
