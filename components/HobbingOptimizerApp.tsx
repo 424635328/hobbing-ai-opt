@@ -697,56 +697,58 @@ export default function HobbingOptimizerApp() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-6 px-4 py-6 md:px-8 lg:py-8">
-      <header className="no-print rounded-[32px] border border-border bg-surface p-6 shadow-[var(--shadow)] backdrop-blur md:p-8">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-3xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-accent">
+    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-7 px-4 py-7 md:px-8 lg:py-10">
+      <header className="no-print rounded-[36px] border border-border-soft bg-surface p-7 shadow-xl backdrop-blur-md card-hover md:p-10">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-3xl slide-up">
+            <p className="text-xs font-bold uppercase tracking-[0.32em] text-accent">
               AI + Web Worker + Pareto Front
             </p>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-foreground md:text-5xl">
+            <h1 className="mt-4 text-4xl font-bold tracking-tight text-foreground md:text-6xl">
               滚齿工艺参数优化系统
             </h1>
-            <p className="mt-4 text-sm leading-7 text-muted md:text-base">
+            <p className="mt-5 text-base leading-relaxed text-muted-soft md:text-lg">
               先让 DeepSeek 或本地工艺规则库生成模型，再由浏览器端根据你选择的
               MOFATA、MOGWO 或 MOPSO 在后台完成多目标寻优，最后通过 3D Pareto
               前沿与权重推荐解输出可打印工艺卡。
             </p>
           </div>
-          <div className="grid gap-3 rounded-[24px] border border-border bg-white/75 p-4 text-sm text-muted md:grid-cols-4">
-            <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-muted">
-                当前档位
+          <div className="grid gap-4 rounded-[28px] border border-border-soft bg-white/85 p-5 shadow-md text-sm fade-in" style={{ animationDelay: "100ms" }}>
+            <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
+              <div className="rounded-xl bg-accent/6 px-4 py-3 border border-accent/10">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-soft font-semibold">
+                  当前档位
+                </div>
+                <div className="mt-2 font-bold text-accent text-lg">
+                  {activeProfile.label}
+                </div>
               </div>
-              <div className="mt-1 font-semibold text-foreground">
-                {activeProfile.label}
+              <div className="rounded-xl bg-accent-warm/6 px-4 py-3 border border-accent-warm/10">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-soft font-semibold">
+                  当前算法
+                </div>
+                <div className="mt-2 font-bold text-accent-warm text-lg">
+                  {activeAlgorithm.label}
+                </div>
               </div>
-            </div>
-            <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-muted">
-                当前算法
+              <div className="rounded-xl bg-accent/6 px-4 py-3 border border-accent/10">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-soft font-semibold">
+                  模型来源
+                </div>
+                <div className="mt-2 font-bold text-foreground text-lg">
+                  {modelSource === "deepseek"
+                    ? "DeepSeek"
+                    : modelSource === "fallback"
+                      ? "本地规则库"
+                      : "待建立"}
+                </div>
               </div>
-              <div className="mt-1 font-semibold text-foreground">
-                {activeAlgorithm.label}
+              <div className="rounded-xl bg-accent-warm/6 px-4 py-3 border border-accent-warm/10">
+                <div className="text-xs uppercase tracking-[0.2em] text-muted-soft font-semibold">
+                  当前状态
+                </div>
+                <div className="mt-2 font-bold text-foreground text-lg truncate">{status}</div>
               </div>
-            </div>
-            <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-muted">
-                模型来源
-              </div>
-              <div className="mt-1 font-semibold text-foreground">
-                {modelSource === "deepseek"
-                  ? "DeepSeek"
-                  : modelSource === "fallback"
-                    ? "本地规则库"
-                    : "待建立"}
-              </div>
-            </div>
-            <div>
-              <div className="text-xs uppercase tracking-[0.18em] text-muted">
-                当前状态
-              </div>
-              <div className="mt-1 font-semibold text-foreground">{status}</div>
             </div>
           </div>
         </div>
