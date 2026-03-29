@@ -38,6 +38,8 @@ import type {
   ResultValidationReport,
   ResultValidationResponse,
 } from "@/lib/result-validation-types";
+import Link from 'next/link';
+
 
 type WeightState = {
   energy: number;
@@ -677,7 +679,7 @@ export default function HobbingOptimizerApp() {
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl slide-up">
             <p className="text-xs font-bold uppercase tracking-[0.32em] text-accent">
-              AI + Web Worker + Pareto Front
+               Web Worker + Pareto Front
             </p>
             <h1 className="mt-3 text-3xl font-bold tracking-tight text-foreground md:text-4xl">
               滚齿工艺参数优化系统
@@ -688,6 +690,12 @@ export default function HobbingOptimizerApp() {
               前沿与权重推荐解输出可打印工艺卡。
             </p>
           </div>
+          <Link 
+  href="https://fata-vision.vercel.app/"
+  className="inline-flex items-center justify-center gap-2 rounded-xl border border-border-soft bg-white/50 px-6 py-2.5 text-sm font-medium text-foreground shadow-sm backdrop-blur-md transition-all duration-200 hover:bg-white/80 hover:border-accent/30 hover:shadow-md active:scale-[0.97] focus:outline-none focus:ring-2 focus:ring-accent/30 focus:ring-offset-2"
+>
+  单目标可视化
+</Link>
           <div className="grid gap-3 rounded-[20px] border border-border-soft bg-white/85 p-4 shadow-md text-sm fade-in" style={{ animationDelay: "100ms" }}>
             <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-4">
               <div className="rounded-lg bg-accent/6 px-3 py-2 border border-accent/10">
@@ -975,7 +983,7 @@ export default function HobbingOptimizerApp() {
               type="button"
               onClick={handleBuildModel}
               disabled={isBuilding}
-              className="rounded-full bg-accent px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-strong disabled:cursor-not-allowed disabled:bg-accent/50"
+              className="inline-flex items-center justify-center gap-2 rounded-full bg-accent px-4 py-2.5 text-sm font-semibold text-white transition-all duration-200 hover:bg-accent-strong hover:shadow-lg active:scale-[0.97] focus:outline-none focus:ring-2 focus:ring-accent/30 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-accent/50 disabled:hover:bg-accent/50 disabled:hover:shadow-none disabled:active:scale-100"
             >
               {isBuilding ? "模型构建中..." : "AI 一键动态建模"}
             </button>
@@ -991,7 +999,7 @@ export default function HobbingOptimizerApp() {
               type="button"
               onClick={handleCheckAiHealth}
               disabled={aiHealth.checking}
-              className="rounded-full border border-border bg-white/80 px-4 py-2.5 text-sm font-semibold text-foreground transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-60"
+              className="inline-flex items-center justify-center gap-2 rounded-full border border-border bg-white/80 px-4 py-2.5 text-sm font-semibold text-foreground transition-all duration-200 hover:border-accent hover:text-accent hover:bg-accent/5 hover:shadow-sm active:scale-[0.97] focus:outline-none focus:ring-2 focus:ring-accent/30 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-border disabled:hover:text-foreground disabled:hover:bg-white/80 disabled:hover:shadow-none disabled:active:scale-100"
             >
               {aiHealth.checking ? "测试中..." : "测试 AI 连接"}
             </button>
@@ -1041,7 +1049,7 @@ export default function HobbingOptimizerApp() {
                 href="/docs/declare"
                 target="_blank"
                 rel="noreferrer"
-                className="rounded-full border border-border bg-white/80 px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-accent hover:text-accent"
+                className="inline-flex items-center justify-center gap-2 rounded-full border border-border bg-white/80 px-3 py-1.5 text-xs font-semibold text-foreground transition-all duration-200 hover:border-accent hover:text-accent hover:bg-accent/5 hover:shadow-sm active:scale-[0.97] focus:outline-none focus:ring-2 focus:ring-accent/30 focus:ring-offset-2"
               >
                 打开参数说明页
               </a>
@@ -1141,7 +1149,7 @@ export default function HobbingOptimizerApp() {
               type="button"
               onClick={handleRunOptimization}
               disabled={!config || isBuilding}
-              className="rounded-full bg-accent-warm px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#9f5716] disabled:cursor-not-allowed disabled:bg-accent-warm/50"
+              className="inline-flex items-center justify-center gap-2 rounded-full bg-accent-warm px-4 py-2.5 text-sm font-semibold text-white transition-all duration-200 hover:bg-[#9f5716] hover:shadow-lg active:scale-[0.97] focus:outline-none focus:ring-2 focus:ring-accent-warm/30 focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-accent-warm/50 disabled:hover:bg-accent-warm/50 disabled:hover:shadow-none disabled:active:scale-100"
             >
               {isRunning
                 ? `重新运行 ${activeAlgorithm.label}`
@@ -1281,7 +1289,7 @@ export default function HobbingOptimizerApp() {
                 type="button"
                 onClick={handleValidateResult}
                 disabled={!recommendedSolution || !config || isValidatingResult}
-                className="rounded-full border border-accent/30 bg-accent/8 px-3 py-1.5 text-xs font-semibold text-accent transition hover:border-accent hover:bg-accent/12 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center justify-center gap-2 rounded-full border border-accent/30 bg-accent/8 px-3 py-1.5 text-xs font-semibold text-accent transition-all duration-200 hover:border-accent hover:bg-accent/12 hover:shadow-sm active:scale-[0.97] focus:outline-none focus:ring-2 focus:ring-accent/30 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-accent/30 disabled:hover:bg-accent/8 disabled:hover:shadow-none disabled:active:scale-100"
               >
                 {isValidatingResult
                   ? "校验中..."
@@ -1293,7 +1301,7 @@ export default function HobbingOptimizerApp() {
                 type="button"
                 onClick={() => setShowValidationDetails((current) => !current)}
                 disabled={!resultValidation && !isValidatingResult && !resultValidationError}
-                className="rounded-full border border-border bg-white/80 px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center justify-center gap-2 rounded-full border border-border bg-white/80 px-3 py-1.5 text-xs font-semibold text-foreground transition-all duration-200 hover:border-accent hover:text-accent hover:bg-accent/5 hover:shadow-sm active:scale-[0.97] focus:outline-none focus:ring-2 focus:ring-accent/30 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:text-foreground disabled:hover:bg-white/80 disabled:hover:shadow-none disabled:active:scale-100"
               >
                 {showValidationDetails ? "收起校验详情" : "查看校验详情"}
               </button>
@@ -1301,7 +1309,7 @@ export default function HobbingOptimizerApp() {
                 type="button"
                 onClick={handlePrintCard}
                 disabled={!recommendedSolution}
-                className="rounded-full border border-border bg-white/80 px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex items-center justify-center gap-2 rounded-full border border-border bg-white/80 px-3 py-1.5 text-xs font-semibold text-foreground transition-all duration-200 hover:border-accent hover:text-accent hover:bg-accent/5 hover:shadow-sm active:scale-[0.97] focus:outline-none focus:ring-2 focus:ring-accent/30 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:text-foreground disabled:hover:bg-white/80 disabled:hover:shadow-none disabled:active:scale-100"
               >
                 打印工艺卡
               </button>
@@ -1463,7 +1471,7 @@ export default function HobbingOptimizerApp() {
                 <button
                   type="button"
                   onClick={() => setShowValidationDetails((current) => !current)}
-                  className="rounded-full border border-border bg-white/80 px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-accent hover:text-accent"
+                  className="inline-flex items-center justify-center gap-2 rounded-full border border-border bg-white/80 px-3 py-1.5 text-xs font-semibold text-foreground transition-all duration-200 hover:border-accent hover:text-accent hover:bg-accent/5 hover:shadow-sm active:scale-[0.97] focus:outline-none focus:ring-2 focus:ring-accent/30 focus:ring-offset-2"
                 >
                   {showValidationDetails ? "收起详情" : "展开详情"}
                 </button>

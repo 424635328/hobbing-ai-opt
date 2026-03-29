@@ -5,7 +5,9 @@ type MarkdownBlock =
   | { type: "h2"; text: string }
   | { type: "h3"; text: string }
   | { type: "paragraph"; text: string }
-  | { type: "list"; items: string[] };
+  | { type: "unordered-list"; items: string[] }
+  | { type: "ordered-list"; items: string[] }
+  | { type: "table"; headers: string[]; rows: string[][] };
 
 function renderInline(text: string): ReactNode[] {
   return text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).filter(Boolean).map((part, index) => {
@@ -32,6 +34,64 @@ function renderInline(text: string): ReactNode[] {
   });
 }
 
+function isOrderedListItem(line: string): boolean {
+  return /^\d+\.\s+/.test(line);
+}
+
+function getOrderedListItemText(line: string): string {
+  return line.replace(/^\d+\.\s+/, "").trim();
+}
+
+function splitTableRow(row: string): string[] {
+  const trimmed = row.trim().replace(/^\|/, "").replace(/\|$/, "");
+  const cells: string[] = [];
+  let current = "";
+  let inCodeSpan = false;
+
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const character = trimmed[index];
+    const previousCharacter = index > 0 ? trimmed[index - 1] : "";
+
+    if (character === "`" && previousCharacter !== "\\") {
+      inCodeSpan = !inCodeSpan;
+      current += character;
+      continue;
+    }
+
+    if (character === "|" && !inCodeSpan && previousCharacter !== "\\") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += character;
+  }
+
+  cells.push(current.trim());
+  return cells;
+}
+
+function isTableSeparator(line: string): boolean {
+  const cells = splitTableRow(line);
+
+  return (
+    cells.length > 0 &&
+    cells.every((cell) => {
+      const normalized = cell.replace(/\s+/g, "");
+      return /^:?-{3,}:?$/.test(normalized);
+    })
+  );
+}
+
+function isTableHeaderRow(line: string, nextLine: string | undefined): boolean {
+  if (!line.includes("|") || !nextLine) {
+    return false;
+  }
+
+  const headerCells = splitTableRow(line);
+  return headerCells.length > 1 && isTableSeparator(nextLine);
+}
+
 function parseMarkdown(content: string): MarkdownBlock[] {
   const lines = content.replace(/\r\n/g, "\n").split("\n");
   const blocks: MarkdownBlock[] = [];
@@ -39,6 +99,7 @@ function parseMarkdown(content: string): MarkdownBlock[] {
 
   while (index < lines.length) {
     const line = lines[index].trim();
+    const nextLine = lines[index + 1]?.trim();
 
     if (!line) {
       index += 1;
@@ -63,6 +124,27 @@ function parseMarkdown(content: string): MarkdownBlock[] {
       continue;
     }
 
+    if (isTableHeaderRow(line, nextLine)) {
+      const headers = splitTableRow(line);
+      const rows: string[][] = [];
+
+      index += 2;
+
+      while (index < lines.length) {
+        const current = lines[index].trim();
+
+        if (!current || !current.includes("|") || isTableSeparator(current)) {
+          break;
+        }
+
+        rows.push(splitTableRow(current));
+        index += 1;
+      }
+
+      blocks.push({ type: "table", headers, rows });
+      continue;
+    }
+
     if (line.startsWith("- ")) {
       const items: string[] = [];
 
@@ -71,7 +153,19 @@ function parseMarkdown(content: string): MarkdownBlock[] {
         index += 1;
       }
 
-      blocks.push({ type: "list", items });
+      blocks.push({ type: "unordered-list", items });
+      continue;
+    }
+
+    if (isOrderedListItem(line)) {
+      const items: string[] = [];
+
+      while (index < lines.length && isOrderedListItem(lines[index].trim())) {
+        items.push(getOrderedListItemText(lines[index].trim()));
+        index += 1;
+      }
+
+      blocks.push({ type: "ordered-list", items });
       continue;
     }
 
@@ -85,7 +179,9 @@ function parseMarkdown(content: string): MarkdownBlock[] {
         current.startsWith("# ") ||
         current.startsWith("## ") ||
         current.startsWith("### ") ||
-        current.startsWith("- ")
+        current.startsWith("- ") ||
+        isOrderedListItem(current) ||
+        isTableHeaderRow(current, lines[index + 1]?.trim())
       ) {
         break;
       }
@@ -141,7 +237,7 @@ export default function MarkdownDocument({ content }: { content: string }) {
           );
         }
 
-        if (block.type === "list") {
+        if (block.type === "unordered-list") {
           return (
             <ul
               key={`${block.type}-${index}`}
@@ -154,6 +250,63 @@ export default function MarkdownDocument({ content }: { content: string }) {
                 </li>
               ))}
             </ul>
+          );
+        }
+
+        if (block.type === "ordered-list") {
+          return (
+            <ol
+              key={`${block.type}-${index}`}
+              className="grid gap-3 rounded-[24px] border border-border/80 bg-white/70 p-5 text-sm leading-7 text-muted"
+            >
+              {block.items.map((item, itemIndex) => (
+                <li key={`${item}-${index}-${itemIndex}`} className="grid grid-cols-[auto_1fr] gap-3">
+                  <span className="font-semibold text-accent">{itemIndex + 1}.</span>
+                  <span>{renderInline(item)}</span>
+                </li>
+              ))}
+            </ol>
+          );
+        }
+
+        if (block.type === "table") {
+          return (
+            <div
+              key={`${block.type}-${index}`}
+              className="overflow-x-auto rounded-[24px] border border-border/80 bg-white/80"
+            >
+              <table className="min-w-full border-collapse text-sm leading-7 md:text-base">
+                <thead className="bg-[#f4efe0]/80 text-foreground">
+                  <tr>
+                    {block.headers.map((header, headerIndex) => (
+                      <th
+                        key={`${header}-${headerIndex}`}
+                        className="border-b border-border/80 px-4 py-3 text-left font-semibold align-top"
+                      >
+                        {renderInline(header)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, rowIndex) => (
+                    <tr
+                      key={`${row.join("|")}-${rowIndex}`}
+                      className={rowIndex % 2 === 0 ? "bg-white/60" : "bg-[#fffaf0]/80"}
+                    >
+                      {block.headers.map((_, cellIndex) => (
+                        <td
+                          key={`${rowIndex}-${cellIndex}`}
+                          className="border-t border-border/60 px-4 py-3 align-top text-muted"
+                        >
+                          {renderInline(row[cellIndex] ?? "")}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           );
         }
 
