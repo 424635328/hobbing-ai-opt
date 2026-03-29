@@ -79,7 +79,7 @@ function parseRequestPayload(payload: unknown): BuildModelRequest | null {
   const tool = typeof record.tool === "string" ? record.tool.trim() : "";
   const maxPower =
     typeof record.maxPower === "number" ? record.maxPower : Number.NaN;
-  const module =
+  const moduleValue =
     typeof record.module === "number" ? record.module : Number.NaN;
   const teeth = typeof record.teeth === "number" ? record.teeth : Number.NaN;
   const faceWidth =
@@ -110,14 +110,18 @@ function parseRequestPayload(payload: unknown): BuildModelRequest | null {
     typeof record.toolSharpeningLife === "number"
       ? record.toolSharpeningLife
       : 50;
+  const aiModel =
+    typeof record.aiModel === "string"
+      ? (record.aiModel as "deepseek" | "local_rules")
+      : undefined;
 
   if (
     !material ||
     !tool ||
     !Number.isFinite(maxPower) ||
     maxPower <= 0 ||
-    !Number.isFinite(module) ||
-    module <= 0 ||
+    !Number.isFinite(moduleValue) ||
+    moduleValue <= 0 ||
     !Number.isFinite(teeth) ||
     teeth <= 0 ||
     !Number.isFinite(faceWidth) ||
@@ -141,7 +145,7 @@ function parseRequestPayload(payload: unknown): BuildModelRequest | null {
     material,
     tool,
     maxPower,
-    module,
+    module: moduleValue,
     teeth,
     faceWidth,
     accuracyGrade,
@@ -152,6 +156,7 @@ function parseRequestPayload(payload: unknown): BuildModelRequest | null {
     toolChangeTime,
     toolSharpeningCost,
     toolSharpeningLife,
+    aiModel,
   };
 }
 
@@ -160,7 +165,8 @@ export async function POST(req: Request) {
 
   try {
     payload = parseRequestPayload(await req.json());
-  } catch {
+  } catch (error) {
+    console.error("Failed to parse request payload:", error);
     payload = null;
   }
 
@@ -171,23 +177,55 @@ export async function POST(req: Request) {
         error:
           "请求体无效，请提供材料、机床功率、齿轮参数、硬度与成本基础参数。",
       },
-      { status: 400 },
+      { 
+        status: 400,
+        headers: {
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        },
+      },
     );
   }
 
   const fallback = buildFallbackModelConfig(payload);
   const apiKey = getDeepSeekApiKey();
+  const requestedModel = payload.aiModel || "deepseek";
+
+  if (requestedModel === "local_rules") {
+    return NextResponse.json<BuildModelResponse>(
+      {
+        success: true,
+        config: fallback.config,
+        source: "fallback",
+        notes: [
+          "已使用本地规则库生成当前工况模型。",
+          ...fallback.notes,
+        ],
+      },
+      {
+        headers: {
+          "Cache-Control": "private, max-age=300",
+        },
+      },
+    );
+  }
 
   if (!apiKey) {
-    return NextResponse.json<BuildModelResponse>({
-      success: true,
-      config: fallback.config,
-      source: "fallback",
-      notes: [
-        "未检测到 DEEPSEEK_API_KEY，已自动切换为本地规则库。",
-        ...fallback.notes,
-      ],
-    });
+    return NextResponse.json<BuildModelResponse>(
+      {
+        success: true,
+        config: fallback.config,
+        source: "fallback",
+        notes: [
+          "未检测到 DEEPSEEK_API_KEY，已自动切换为本地规则库。",
+          ...fallback.notes,
+        ],
+      },
+      {
+        headers: {
+          "Cache-Control": "private, max-age=300",
+        },
+      },
+    );
   }
 
   try {
@@ -223,25 +261,40 @@ export async function POST(req: Request) {
       throw new Error("DeepSeek 返回的模型结构不完整或系数超出允许范围。");
     }
 
-    return NextResponse.json<BuildModelResponse>({
-      success: true,
-      config,
-      source: "deepseek",
-      notes: [
-        "已通过 DeepSeek 生成当前工况模型。",
-        `机床最大功率约束已锁定为 ${payload.maxPower.toFixed(1)} kW。`,
-        `粗糙度约束将按精度等级 ${payload.accuracyGrade} 自动绑定。`,
-      ],
-    });
+    return NextResponse.json<BuildModelResponse>(
+      {
+        success: true,
+        config,
+        source: "deepseek",
+        notes: [
+          "已通过 DeepSeek 生成当前工况模型。",
+          `机床最大功率约束已锁定为 ${payload.maxPower.toFixed(1)} kW。`,
+          `粗糙度约束将按精度等级 ${payload.accuracyGrade} 自动绑定。`,
+        ],
+      },
+      {
+        headers: {
+          "Cache-Control": "private, max-age=300",
+        },
+      },
+    );
   } catch (error) {
-    return NextResponse.json<BuildModelResponse>({
-      success: true,
-      config: fallback.config,
-      source: "fallback",
-      notes: [
-        `DeepSeek 调用失败，已自动切换为本地规则库。原因：${getErrorMessage(error)}`,
-        ...fallback.notes,
-      ],
-    });
+    console.error("DeepSeek API error:", error);
+    return NextResponse.json<BuildModelResponse>(
+      {
+        success: true,
+        config: fallback.config,
+        source: "fallback",
+        notes: [
+          `DeepSeek 调用失败，已自动切换为本地规则库。原因：${getErrorMessage(error)}`,
+          ...fallback.notes,
+        ],
+      },
+      {
+        headers: {
+          "Cache-Control": "private, max-age=300",
+        },
+      },
+    );
   }
 }

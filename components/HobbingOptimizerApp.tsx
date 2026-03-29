@@ -6,7 +6,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type ChangeEvent,
 } from "react";
 
 import ParetoChart from "@/components/ParetoChart";
@@ -15,6 +14,8 @@ import {
   DEFAULT_COST_PARAMETERS,
   DEFAULT_CONSTRAINTS,
   DEFAULT_GEAR_PARAMETERS,
+  SUPPORTED_AI_MODELS,
+  type AiModelType,
   type BuildModelRequest,
   type BuildModelResponse,
   type DecisionVector,
@@ -23,17 +24,20 @@ import {
   type ObjectiveVector,
 } from "@/lib/hobbing-model";
 import {
+  DEFAULT_OPTIMIZATION_ALGORITHM,
+  OPTIMIZATION_ALGORITHMS,
   OPTIMIZATION_PROFILES,
-  SUPPORTED_ALGORITHMS,
-  type ConvertMatlabAlgorithmResponse,
-  type MatlabAlgorithmConfidence,
-  type MatlabAlgorithmConversionSource,
+  getOptimizationAlgorithmConfig,
   type OptimizationAlgorithm,
   type OptimizationProfile,
   type OptimizationStats,
   type OptimizationWorkerCommand,
   type OptimizationWorkerEvent,
 } from "@/lib/optimization-types";
+import type {
+  ResultValidationReport,
+  ResultValidationResponse,
+} from "@/lib/result-validation-types";
 
 type WeightState = {
   energy: number;
@@ -54,14 +58,7 @@ type RankedSolution = {
   score: number;
 };
 
-type MatlabConversionState = {
-  fileName: string;
-  source: MatlabAlgorithmConversionSource | null;
-  confidence: MatlabAlgorithmConfidence | null;
-  notes: string[];
-  detail: string;
-  normalizedFormat: string;
-};
+
 
 const DEFAULT_WEIGHTS: WeightState = {
   energy: 100,
@@ -73,15 +70,6 @@ const DEFAULT_AI_HEALTH: AiHealthState = {
   checking: false,
   status: "idle",
   detail: "尚未测试 AI 连接。",
-};
-
-const DEFAULT_MATLAB_CONVERSION: MatlabConversionState = {
-  fileName: "",
-  source: null,
-  confidence: null,
-  notes: [],
-  detail: "尚未上传 MATLAB 算法文件。",
-  normalizedFormat: "",
 };
 
 function normalizeWeights(weights: WeightState): WeightState {
@@ -171,22 +159,6 @@ function formatSeconds(milliseconds: number): string {
   return `${(milliseconds / 1000).toFixed(milliseconds >= 10000 ? 1 : 2)} s`;
 }
 
-function formatConfidence(confidence: MatlabAlgorithmConfidence | null): string {
-  if (confidence === "high") {
-    return "高";
-  }
-
-  if (confidence === "medium") {
-    return "中";
-  }
-
-  if (confidence === "low") {
-    return "低";
-  }
-
-  return "待识别";
-}
-
 function safeMaxPowerValue(value: string): number {
   const parsed = Number(value);
 
@@ -218,24 +190,71 @@ function extractErrorMessage(error: unknown): string {
   return "未知错误";
 }
 
-function buildAlgorithmDescriptor(
-  conversion: MatlabConversionState,
-  algorithmLabel: string,
-): string {
-  if (!conversion.fileName) {
-    return "手动选择";
+function validationVerdictClassName(verdict: ResultValidationReport["verdict"]): string {
+  if (verdict === "合理") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
   }
 
-  if (conversion.source === "deepseek") {
-    return `DeepSeek 转换 / ${conversion.fileName}`;
+  if (verdict === "需关注") {
+    return "border-amber-200 bg-amber-50 text-amber-700";
   }
 
-  if (conversion.source === "fallback") {
-    return `规则转换 / ${conversion.fileName}`;
-  }
-
-  return `已上传文件 / ${conversion.fileName} / 当前算法 ${algorithmLabel}`;
+  return "border-rose-200 bg-rose-50 text-rose-700";
 }
+
+function validationItemClassName(status: "pass" | "warn" | "fail"): string {
+  if (status === "pass") {
+    return "border-emerald-100 bg-emerald-50/70";
+  }
+
+  if (status === "warn") {
+    return "border-amber-100 bg-amber-50/70";
+  }
+
+  return "border-rose-100 bg-rose-50/70";
+}
+
+function validationBoundaryClassName(
+  status: "normal" | "near_boundary" | "at_boundary",
+): string {
+  if (status === "normal") {
+    return "border-border bg-white/80";
+  }
+
+  if (status === "near_boundary") {
+    return "border-amber-100 bg-amber-50/70";
+  }
+
+  return "border-rose-100 bg-rose-50/70";
+}
+
+function validationItemStatusLabel(status: "pass" | "warn" | "fail"): string {
+  if (status === "pass") {
+    return "通过";
+  }
+
+  if (status === "warn") {
+    return "关注";
+  }
+
+  return "异常";
+}
+
+function validationBoundaryStatusLabel(
+  status: "normal" | "near_boundary" | "at_boundary",
+): string {
+  if (status === "normal") {
+    return "正常";
+  }
+
+  if (status === "near_boundary") {
+    return "贴边";
+  }
+
+  return "触边";
+}
+
+
 
 export default function HobbingOptimizerApp() {
   const [material, setMaterial] = useState("40Cr");
@@ -273,7 +292,9 @@ export default function HobbingOptimizerApp() {
     String(DEFAULT_COST_PARAMETERS.toolSharpeningLife),
   );
   const [profile, setProfile] = useState<OptimizationProfile>("preview");
-  const [algorithm, setAlgorithm] = useState<OptimizationAlgorithm>("mofata");
+  const [algorithm, setAlgorithm] = useState<OptimizationAlgorithm>(
+    DEFAULT_OPTIMIZATION_ALGORITHM,
+  );
   const [config, setConfig] = useState<ModelConfig | null>(null);
   const [modelSource, setModelSource] = useState<ModelSource | null>(null);
   const [modelNotes, setModelNotes] = useState<string[]>([]);
@@ -281,7 +302,6 @@ export default function HobbingOptimizerApp() {
   const [status, setStatus] = useState("等待建立工艺模型。");
   const [isBuilding, setIsBuilding] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
-  const [isConvertingAlgorithm, setIsConvertingAlgorithm] = useState(false);
   const [progress, setProgress] = useState(0);
   const [pfData, setPfData] = useState<ObjectiveVector[]>([]);
   const [psData, setPsData] = useState<DecisionVector[]>([]);
@@ -292,18 +312,24 @@ export default function HobbingOptimizerApp() {
   const [runAlgorithmLabel, setRunAlgorithmLabel] = useState<string | null>(null);
   const [runAlgorithmDescriptor, setRunAlgorithmDescriptor] = useState<string | null>(null);
   const [aiHealth, setAiHealth] = useState<AiHealthState>(DEFAULT_AI_HEALTH);
-  const [matlabFile, setMatlabFile] = useState<File | null>(null);
-  const [matlabConversion, setMatlabConversion] = useState<MatlabConversionState>(
-    DEFAULT_MATLAB_CONVERSION,
+  const [selectedAiModel, setSelectedAiModel] = useState<AiModelType>("deepseek");
+  const [isValidatingResult, setIsValidatingResult] = useState(false);
+  const [resultValidation, setResultValidation] =
+    useState<ResultValidationReport | null>(null);
+  const [resultValidationError, setResultValidationError] = useState<string | null>(
+    null,
   );
+  const [showValidationDetails, setShowValidationDetails] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const activeJobRef = useRef<string | null>(null);
+  const validationSectionRef = useRef<HTMLElement | null>(null);
   const deferredPfData = useDeferredValue(pfData);
   const rankedSolutions = rankSolutions(pfData, psData, weights);
   const recommendedSolution = rankedSolutions[0] ?? null;
   const activeProfile = OPTIMIZATION_PROFILES[profile];
-  const activeAlgorithm = SUPPORTED_ALGORITHMS[algorithm];
+  const activeAlgorithm =
+    getOptimizationAlgorithmConfig(algorithm) ?? OPTIMIZATION_ALGORITHMS[0];
   const normalizedWeights = normalizeWeights(weights);
   const formSnapshot: BuildModelRequest = {
     material,
@@ -336,10 +362,7 @@ export default function HobbingOptimizerApp() {
       DEFAULT_COST_PARAMETERS.toolSharpeningLife,
     ),
   };
-  const currentAlgorithmDescriptor = buildAlgorithmDescriptor(
-    matlabConversion,
-    activeAlgorithm.label,
-  );
+  const currentAlgorithmDescriptor = "手动选择";
 
   function stopWorker() {
     workerRef.current?.terminate();
@@ -356,50 +379,10 @@ export default function HobbingOptimizerApp() {
     setRunProfileLabel(null);
     setRunAlgorithmLabel(null);
     setRunAlgorithmDescriptor(null);
-  }
-
-  function buildRequestFromForm(): BuildModelRequest | null {
-    const request: BuildModelRequest = {
-      material: material.trim(),
-      tool: tool.trim(),
-      maxPower: Number(maxPower),
-      module: Number(moduleValue),
-      teeth: Number(teeth),
-      faceWidth: Number(faceWidth),
-      accuracyGrade: Number(accuracyGrade),
-      hardness: Number(hardness),
-      machineRate: Number(machineRate),
-      toolPrice: Number(toolPrice),
-      electricityRate: Number(electricityRate),
-      toolChangeTime: Number(toolChangeTime),
-      toolSharpeningCost: Number(toolSharpeningCost),
-      toolSharpeningLife: Number(toolSharpeningLife),
-    };
-
-    const numbers = [
-      request.maxPower,
-      request.module,
-      request.teeth,
-      request.faceWidth,
-      request.accuracyGrade,
-      request.hardness,
-      request.machineRate,
-      request.toolPrice,
-      request.electricityRate,
-      request.toolChangeTime,
-      request.toolSharpeningCost,
-      request.toolSharpeningLife,
-    ];
-
-    if (
-      !request.material ||
-      !request.tool ||
-      numbers.some((value) => !Number.isFinite(value) || value <= 0)
-    ) {
-      return null;
-    }
-
-    return request;
+    setResultValidation(null);
+    setResultValidationError(null);
+    setIsValidatingResult(false);
+    setShowValidationDetails(false);
   }
 
   useEffect(() => {
@@ -424,7 +407,7 @@ export default function HobbingOptimizerApp() {
     setModelNotes([]);
     setModelRequest(null);
     setIsBuilding(true);
-    setStatus("AI 正在建立当前工况的滚齿数学模型...");
+    setStatus(`${SUPPORTED_AI_MODELS[selectedAiModel].name} 正在建立当前工况的滚齿数学模型...`);
 
     try {
       const response = await fetch("/api/build-model", {
@@ -432,7 +415,10 @@ export default function HobbingOptimizerApp() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(formSnapshot),
+        body: JSON.stringify({
+          ...formSnapshot,
+          aiModel: selectedAiModel,
+        }),
       });
 
       const result = (await response.json()) as BuildModelResponse;
@@ -490,88 +476,13 @@ export default function HobbingOptimizerApp() {
 
   function handleAlgorithmChange(nextAlgorithm: OptimizationAlgorithm) {
     setAlgorithm(nextAlgorithm);
-    setStatus(`当前求解算法已切换为 ${SUPPORTED_ALGORITHMS[nextAlgorithm].label}。`);
+    const nextConfig = getOptimizationAlgorithmConfig(nextAlgorithm);
+    setStatus(
+      `当前求解算法已切换为 ${nextConfig?.label ?? nextAlgorithm}。`,
+    );
   }
 
-  function handleMatlabFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0] ?? null;
-    setMatlabFile(file);
 
-    if (!file) {
-      setMatlabConversion(DEFAULT_MATLAB_CONVERSION);
-      return;
-    }
-
-    setMatlabConversion({
-      fileName: file.name,
-      source: null,
-      confidence: null,
-      notes: ["点击“AI 转换 .m 算法文件”后，系统会识别并映射到受支持的算法。"],
-      detail: `已选择文件 ${file.name}，大小 ${(file.size / 1024).toFixed(1)} KB。`,
-      normalizedFormat: "",
-    });
-  }
-
-  async function handleConvertMatlabAlgorithm() {
-    if (!matlabFile) {
-      setStatus("请先上传一个 MATLAB .m 算法文件。");
-      return;
-    }
-
-    if (!matlabFile.name.toLowerCase().endsWith(".m")) {
-      setStatus("当前仅支持上传 .m 文件。");
-      return;
-    }
-
-    setIsConvertingAlgorithm(true);
-    setStatus("AI 正在分析 MATLAB 算法文件并转换为受支持格式...");
-
-    try {
-      const fileContent = await matlabFile.text();
-
-      if (!fileContent.trim()) {
-        throw new Error("上传的 .m 文件内容为空。");
-      }
-
-      const response = await fetch("/api/convert-matlab", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          fileName: matlabFile.name,
-          fileContent,
-        }),
-      });
-
-      const result = (await response.json()) as ConvertMatlabAlgorithmResponse;
-
-      if (!response.ok || !result.success) {
-        throw new Error(
-          result.success ? "接口返回异常，但未提供错误信息。" : result.error,
-        );
-      }
-
-      const algorithmLabel = SUPPORTED_ALGORITHMS[result.algorithm].label;
-
-      setAlgorithm(result.algorithm);
-      setMatlabConversion({
-        fileName: matlabFile.name,
-        source: result.source,
-        confidence: result.confidence,
-        notes: result.notes,
-        detail: `${matlabFile.name} 已映射为 ${algorithmLabel}。`,
-        normalizedFormat: `${result.normalizedFormat.supportedRuntime} / ${result.normalizedFormat.algorithm}`,
-      });
-      setStatus(
-        `${result.source === "deepseek" ? "AI" : "规则识别"} 已将 ${matlabFile.name} 转换为 ${algorithmLabel}，现在可以直接运行优化。`,
-      );
-    } catch (error) {
-      setStatus(`算法转换失败：${extractErrorMessage(error)}`);
-    } finally {
-      setIsConvertingAlgorithm(false);
-    }
-  }
 
   function handleRunOptimization() {
     if (!config) {
@@ -611,10 +522,11 @@ export default function HobbingOptimizerApp() {
       }
 
       if (data.type === "start") {
-        const startedAlgorithm = SUPPORTED_ALGORITHMS[data.algorithm];
+        const startedLabel =
+          getOptimizationAlgorithmConfig(data.algorithm)?.label ?? data.algorithm;
 
         setStatus(
-          `${startedAlgorithm.label} 已启动，种群规模 ${data.settings.N}，最大评估 ${data.settings.Max_FEs}。`,
+          `${startedLabel} 已启动，种群规模 ${data.settings.N}，最大评估 ${data.settings.Max_FEs}。`,
         );
         return;
       }
@@ -636,19 +548,20 @@ export default function HobbingOptimizerApp() {
       }
 
       if (data.type === "done") {
-        const finishedAlgorithm = SUPPORTED_ALGORITHMS[data.algorithm];
+        const finishedLabel =
+          getOptimizationAlgorithmConfig(data.algorithm)?.label ?? data.algorithm;
 
         setIsRunning(false);
         setStats(data.stats);
         setGeneratedAt(new Date().toISOString());
         setStatus(
-          `${finishedAlgorithm.label} 优化完成，已得到 ${data.stats.archiveSize} 个非支配解，可进行权重决策与打印工艺卡。`,
+          `${finishedLabel} 优化完成，已得到 ${data.stats.archiveSize} 个非支配解，可进行权重决策与打印工艺卡。`,
         );
-        startTransition(() => {
-          setProgress(100);
-          setPfData(data.finalPF);
-          setPsData(data.finalPS);
-        });
+        // Keep final result updates at normal priority to avoid delayed paint
+        // on some mobile browsers/webviews.
+        setProgress(100);
+        setPfData(data.finalPF);
+        setPsData(data.finalPS);
 
         if (workerRef.current === worker) {
           worker.terminate();
@@ -696,46 +609,108 @@ export default function HobbingOptimizerApp() {
     window.print();
   }
 
+  function scrollToValidationSection() {
+    setTimeout(() => {
+      validationSectionRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 120);
+  }
+
+  async function handleValidateResult() {
+    if (!config || !recommendedSolution) {
+      setStatus("请先完成优化并得到推荐解。");
+      return;
+    }
+
+    setIsValidatingResult(true);
+    setResultValidationError(null);
+    setShowValidationDetails(true);
+    setStatus("正在执行结果校验（规则校验 + AI 分析）...");
+    scrollToValidationSection();
+
+    try {
+      const response = await fetch("/api/validate-result", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          request: modelRequest ?? formSnapshot,
+          config,
+          recommended: recommendedSolution,
+          alternatives: rankedSolutions,
+          modelSource,
+          modelNotes,
+          algorithmLabel: runAlgorithmLabel ?? activeAlgorithm.label,
+          profileLabel: runProfileLabel ?? activeProfile.label,
+          normalizedWeights,
+        }),
+      });
+      const result = (await response.json()) as ResultValidationResponse;
+
+      if (!response.ok || !result.success) {
+        throw new Error(
+          result.success ? "结果校验接口返回异常。" : result.error,
+        );
+      }
+
+      setResultValidation(result.report);
+      setStatus(
+        `结果校验完成：${result.report.verdict}（${result.report.source === "deepseek" ? "AI+规则" : "规则校验"}）`,
+      );
+      scrollToValidationSection();
+    } catch (error) {
+      const message = extractErrorMessage(error);
+      setResultValidationError(message);
+      setStatus(`结果校验失败：${message}`);
+      scrollToValidationSection();
+    } finally {
+      setIsValidatingResult(false);
+    }
+  }
+
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-7 px-4 py-7 md:px-8 lg:py-10">
-      <header className="no-print rounded-[36px] border border-border-soft bg-surface p-7 shadow-xl backdrop-blur-md card-hover md:p-10">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-5 px-4 py-5 md:px-6 lg:py-7">
+      <header className="no-print rounded-[28px] border border-border-soft bg-surface p-5 shadow-xl backdrop-blur-md card-hover md:p-7">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-3xl slide-up">
             <p className="text-xs font-bold uppercase tracking-[0.32em] text-accent">
               AI + Web Worker + Pareto Front
             </p>
-            <h1 className="mt-4 text-4xl font-bold tracking-tight text-foreground md:text-6xl">
+            <h1 className="mt-3 text-3xl font-bold tracking-tight text-foreground md:text-4xl">
               滚齿工艺参数优化系统
             </h1>
-            <p className="mt-5 text-base leading-relaxed text-muted-soft md:text-lg">
+            <p className="mt-3 text-sm leading-relaxed text-muted-soft md:text-base">
               先让 DeepSeek 或本地工艺规则库生成模型，再由浏览器端根据你选择的
               MOFATA、MOGWO 或 MOPSO 在后台完成多目标寻优，最后通过 3D Pareto
               前沿与权重推荐解输出可打印工艺卡。
             </p>
           </div>
-          <div className="grid gap-4 rounded-[28px] border border-border-soft bg-white/85 p-5 shadow-md text-sm fade-in" style={{ animationDelay: "100ms" }}>
-            <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-4">
-              <div className="rounded-xl bg-accent/6 px-4 py-3 border border-accent/10">
+          <div className="grid gap-3 rounded-[20px] border border-border-soft bg-white/85 p-4 shadow-md text-sm fade-in" style={{ animationDelay: "100ms" }}>
+            <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-4">
+              <div className="rounded-lg bg-accent/6 px-3 py-2 border border-accent/10">
                 <div className="text-xs uppercase tracking-[0.2em] text-muted-soft font-semibold">
                   当前档位
                 </div>
-                <div className="mt-2 font-bold text-accent text-lg">
+                <div className="mt-1 font-bold text-accent">
                   {activeProfile.label}
                 </div>
               </div>
-              <div className="rounded-xl bg-accent-warm/6 px-4 py-3 border border-accent-warm/10">
+              <div className="rounded-lg bg-accent-warm/6 px-3 py-2 border border-accent-warm/10">
                 <div className="text-xs uppercase tracking-[0.2em] text-muted-soft font-semibold">
                   当前算法
                 </div>
-                <div className="mt-2 font-bold text-accent-warm text-lg">
+                <div className="mt-1 font-bold text-accent-warm">
                   {activeAlgorithm.label}
                 </div>
               </div>
-              <div className="rounded-xl bg-accent/6 px-4 py-3 border border-accent/10">
+              <div className="rounded-lg bg-accent/6 px-3 py-2 border border-accent/10">
                 <div className="text-xs uppercase tracking-[0.2em] text-muted-soft font-semibold">
                   模型来源
                 </div>
-                <div className="mt-2 font-bold text-foreground text-lg">
+                <div className="mt-1 font-bold text-foreground">
                   {modelSource === "deepseek"
                     ? "DeepSeek"
                     : modelSource === "fallback"
@@ -743,40 +718,40 @@ export default function HobbingOptimizerApp() {
                       : "待建立"}
                 </div>
               </div>
-              <div className="rounded-xl bg-accent-warm/6 px-4 py-3 border border-accent-warm/10">
+              <div className="rounded-lg bg-accent-warm/6 px-3 py-2 border border-accent-warm/10">
                 <div className="text-xs uppercase tracking-[0.2em] text-muted-soft font-semibold">
                   当前状态
                 </div>
-                <div className="mt-2 font-bold text-foreground text-lg truncate">{status}</div>
+                <div className="mt-1 font-bold text-foreground truncate">{status}</div>
               </div>
             </div>
           </div>
         </div>
       </header>
 
-      <section className="no-print grid gap-6 xl:grid-cols-[1.06fr_0.94fr]">
-        <div className="rounded-[32px] border border-border bg-surface p-6 shadow-[var(--shadow)] backdrop-blur md:p-8">
+      <section className="no-print grid gap-5 xl:grid-cols-[1.06fr_0.94fr]">
+        <div className="stable-paint rounded-[24px] border border-border bg-surface p-5 shadow-[var(--shadow)] md:p-6">
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent">
                 Step 1
               </p>
-              <h2 className="mt-2 text-2xl font-semibold text-foreground">
+              <h2 className="mt-2 text-xl font-semibold text-foreground">
                 工艺条件输入与动态建模
               </h2>
             </div>
-            <span className="rounded-full bg-accent/10 px-4 py-2 text-xs font-semibold text-accent">
+            <span className="rounded-full bg-accent/10 px-3 py-1 text-xs font-semibold text-accent">
               AI 建模
             </span>
           </div>
 
-          <div className="mt-6 grid gap-4">
-            <div className="rounded-[24px] border border-border/80 bg-white/60 p-4">
-              <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted mb-3">
+          <div className="mt-5 grid gap-3">
+            <div className="rounded-[20px] border border-border/80 bg-white/60 p-3">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted mb-2">
                 齿轮基础参数
               </h3>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="grid gap-2">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1.5">
                   <span className="text-sm font-medium text-foreground">齿轮模数 (m)</span>
                   <input
                     type="number"
@@ -785,10 +760,10 @@ export default function HobbingOptimizerApp() {
                     step="0.01"
                     value={moduleValue}
                     onChange={(event) => setModuleValue(event.target.value)}
-                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                    className="rounded-xl border border-border bg-white/75 px-3 py-2 text-sm outline-none transition focus:border-accent focus:bg-white"
                   />
                 </label>
-                <label className="grid gap-2">
+                <label className="grid gap-1.5">
                   <span className="text-sm font-medium text-foreground">齿数 (z)</span>
                   <input
                     type="number"
@@ -797,10 +772,10 @@ export default function HobbingOptimizerApp() {
                     step="1"
                     value={teeth}
                     onChange={(event) => setTeeth(event.target.value)}
-                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                    className="rounded-xl border border-border bg-white/75 px-3 py-2 text-sm outline-none transition focus:border-accent focus:bg-white"
                   />
                 </label>
-                <label className="grid gap-2">
+                <label className="grid gap-1.5">
                   <span className="text-sm font-medium text-foreground">齿宽 (B)</span>
                   <input
                     type="number"
@@ -809,10 +784,10 @@ export default function HobbingOptimizerApp() {
                     step="0.1"
                     value={faceWidth}
                     onChange={(event) => setFaceWidth(event.target.value)}
-                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                    className="rounded-xl border border-border bg-white/75 px-3 py-2 text-sm outline-none transition focus:border-accent focus:bg-white"
                   />
                 </label>
-                <label className="grid gap-2">
+                <label className="grid gap-1.5">
                   <span className="text-sm font-medium text-foreground">精度等级 (GB/T 10095)</span>
                   <input
                     type="number"
@@ -821,16 +796,16 @@ export default function HobbingOptimizerApp() {
                     step="1"
                     value={accuracyGrade}
                     onChange={(event) => setAccuracyGrade(event.target.value)}
-                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                    className="rounded-xl border border-border bg-white/75 px-3 py-2 text-sm outline-none transition focus:border-accent focus:bg-white"
                   />
                 </label>
-                <label className="grid gap-2 sm:col-span-2">
+                <label className="grid gap-1.5 sm:col-span-2">
                   <span className="text-sm font-medium text-foreground">工件材料及硬度</span>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <input
                       value={material}
                       onChange={(event) => setMaterial(event.target.value)}
-                      className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                      className="rounded-xl border border-border bg-white/75 px-3 py-2 text-sm outline-none transition focus:border-accent focus:bg-white"
                       placeholder="例如：40Cr调质"
                     />
                     <input
@@ -840,7 +815,7 @@ export default function HobbingOptimizerApp() {
                       step="5"
                       value={hardness}
                       onChange={(event) => setHardness(event.target.value)}
-                      className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                      className="rounded-xl border border-border bg-white/75 px-3 py-2 text-sm outline-none transition focus:border-accent focus:bg-white"
                       placeholder="硬度 HB"
                     />
                   </div>
@@ -848,21 +823,21 @@ export default function HobbingOptimizerApp() {
               </div>
             </div>
 
-            <div className="rounded-[24px] border border-border/80 bg-white/60 p-4">
-              <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted mb-3">
+            <div className="rounded-[20px] border border-border/80 bg-white/60 p-3">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted mb-2">
                 刀具与机床
               </h3>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="grid gap-2">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="grid gap-1.5">
                   <span className="text-sm font-medium text-foreground">刀具材料</span>
                   <input
                     value={tool}
                     onChange={(event) => setTool(event.target.value)}
-                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                    className="rounded-xl border border-border bg-white/75 px-3 py-2 text-sm outline-none transition focus:border-accent focus:bg-white"
                     placeholder="例如：W18Cr4V"
                   />
                 </label>
-                <label className="grid gap-2">
+                <label className="grid gap-1.5">
                   <span className="text-sm font-medium text-foreground">
                     机床最大功率 (kW)
                   </span>
@@ -873,17 +848,17 @@ export default function HobbingOptimizerApp() {
                     step="0.1"
                     value={maxPower}
                     onChange={(event) => setMaxPower(event.target.value)}
-                    className="rounded-2xl border border-border bg-white/75 px-4 py-3 text-sm outline-none transition focus:border-accent focus:bg-white"
+                    className="rounded-xl border border-border bg-white/75 px-3 py-2 text-sm outline-none transition focus:border-accent focus:bg-white"
                   />
                 </label>
               </div>
             </div>
 
-            <div className="rounded-[24px] border border-border/80 bg-white/60 p-4">
-              <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted mb-3">
+            <div className="rounded-[20px] border border-border/80 bg-white/60 p-3">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted mb-2">
                 成本核算参数
               </h3>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-2">
                 <label className="grid gap-2">
                   <span className="text-sm font-medium text-foreground">机床工时费 (元/小时)</span>
                   <input
@@ -960,42 +935,79 @@ export default function HobbingOptimizerApp() {
             </div>
           </div>
 
-          <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+          <div className="mt-5 rounded-[20px] border border-border/80 bg-white/60 p-3">
+            <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted mb-2">
+              AI 模型选择
+            </h3>
+            <div className="grid gap-2 md:grid-cols-2">
+              {(
+                Object.entries(SUPPORTED_AI_MODELS) as Array<
+                  [AiModelType, typeof SUPPORTED_AI_MODELS.deepseek]
+                >
+              ).map(([key, settings]) => (
+                <label
+                  key={key}
+                  className={`cursor-pointer rounded-[20px] border p-3 transition ${
+                    selectedAiModel === key
+                      ? "border-accent bg-accent/8"
+                      : "border-border bg-white/75"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="aiModel"
+                    value={key}
+                    checked={selectedAiModel === key}
+                    onChange={() => setSelectedAiModel(key)}
+                    className="sr-only"
+                  />
+                  <div className="font-semibold text-foreground">{settings.name}</div>
+                  <p className="mt-1 text-xs leading-5 text-muted">
+                    {settings.description}
+                  </p>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-5 flex flex-col gap-2 sm:flex-row">
             <button
               type="button"
               onClick={handleBuildModel}
               disabled={isBuilding}
-              className="rounded-full bg-accent px-5 py-3 text-sm font-semibold text-white transition hover:bg-accent-strong disabled:cursor-not-allowed disabled:bg-accent/50"
+              className="rounded-full bg-accent px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-strong disabled:cursor-not-allowed disabled:bg-accent/50"
             >
               {isBuilding ? "模型构建中..." : "AI 一键动态建模"}
             </button>
-            <div className="rounded-full border border-border bg-white/75 px-4 py-3 text-sm text-muted">
+            <div className="rounded-full border border-border bg-white/75 px-4 py-2.5 text-xs text-muted">
               {config
                 ? `刀具寿命系数 ${config.constants.tool_life_constant.toFixed(0)}，切削力系数 ${config.constants.specific_cutting_force.toFixed(0)}`
                 : "建立模型后将在这里展示核心系数。"}
             </div>
           </div>
 
-          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
             <button
               type="button"
               onClick={handleCheckAiHealth}
               disabled={aiHealth.checking}
-              className="rounded-full border border-border bg-white/80 px-5 py-3 text-sm font-semibold text-foreground transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-full border border-border bg-white/80 px-4 py-2.5 text-sm font-semibold text-foreground transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-60"
             >
               {aiHealth.checking ? "测试中..." : "测试 AI 连接"}
             </button>
-            <div className="rounded-full border border-border bg-white/75 px-4 py-3 text-sm text-muted">
+            <div className="rounded-full border border-border bg-white/75 px-4 py-2.5 text-xs text-muted">
               {aiHealth.detail}
             </div>
           </div>
 
-          <div className="mt-6 rounded-[24px] border border-border bg-white/70 p-5">
+
+
+          <div className="mt-5 rounded-[20px] border border-border bg-white/70 p-4">
             <div className="flex items-center justify-between gap-4">
-              <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted">
+              <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
                 模型状态
               </h3>
-              <span className="rounded-full bg-accent/8 px-3 py-1 text-xs font-semibold text-accent">
+              <span className="rounded-full bg-accent/8 px-2.5 py-1 text-xs font-semibold text-accent">
                 {modelSource === "deepseek"
                   ? "DeepSeek"
                   : modelSource === "fallback"
@@ -1003,11 +1015,11 @@ export default function HobbingOptimizerApp() {
                     : "Idle"}
               </span>
             </div>
-            <p className="mt-3 text-sm leading-6 text-foreground">{status}</p>
+            <p className="mt-2 text-sm leading-5 text-foreground">{status}</p>
             {modelNotes.length > 0 && (
-              <ul className="mt-4 grid gap-2 text-sm leading-6 text-muted">
+              <ul className="mt-3 grid gap-1.5 text-sm leading-5 text-muted">
                 {modelNotes.map((note) => (
-                  <li key={note} className="rounded-2xl bg-accent/6 px-4 py-3">
+                  <li key={note} className="rounded-xl bg-accent/6 px-3 py-2">
                     {note}
                   </li>
                 ))}
@@ -1015,60 +1027,56 @@ export default function HobbingOptimizerApp() {
             )}
           </div>
 
-          <div className="mt-6 rounded-[24px] border border-border bg-white/70 p-5">
+          <div className="mt-5 rounded-[20px] border border-border bg-white/70 p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted">
+                <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
                   参数说明文档
                 </h3>
-                <p className="mt-2 text-sm leading-6 text-muted">
-                  说明材料输入、功率约束，以及多算法 `.m` 转换入口的用途。
+                <p className="mt-1.5 text-sm leading-5 text-muted">
+                  说明材料输入、功率约束，以及求解算法与运行档位配置的用途。
                 </p>
               </div>
               <a
                 href="/docs/declare"
                 target="_blank"
                 rel="noreferrer"
-                className="rounded-full border border-border bg-white/80 px-4 py-2 text-sm font-semibold text-foreground transition hover:border-accent hover:text-accent"
+                className="rounded-full border border-border bg-white/80 px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-accent hover:text-accent"
               >
                 打开参数说明页
               </a>
             </div>
-            <div className="mt-4 rounded-[20px] border border-border/80 bg-[#fffdf7] p-4 text-sm leading-7 text-muted">
+            <div className="mt-3 rounded-[16px] border border-border/80 bg-[#fffdf7] p-3 text-xs leading-6 text-muted">
               主页面不再直接内嵌文档内容。点击上方按钮后会打开独立的 TSX 文档页面，并从
               `/docs/declare.md` 读取源码后进行渲染。
             </div>
           </div>
         </div>
 
-        <div className="rounded-[32px] border border-border bg-surface p-6 shadow-[var(--shadow)] backdrop-blur md:p-8">
-          <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="rounded-[24px] border border-border bg-surface p-5 shadow-[var(--shadow)] backdrop-blur md:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent">
                 Step 2
               </p>
-              <h2 className="mt-2 text-2xl font-semibold text-foreground">
+              <h2 className="mt-2 text-xl font-semibold text-foreground">
                 可选算法求解与偏好设置
               </h2>
             </div>
-            <span className="rounded-full bg-accent-warm/12 px-4 py-2 text-xs font-semibold text-accent-warm">
+            <span className="rounded-full bg-accent-warm/12 px-3 py-1.5 text-xs font-semibold text-accent-warm">
               Web Worker 后台执行
             </span>
           </div>
 
-          <div className="mt-6 grid gap-4">
-            <div className="grid gap-2">
+          <div className="mt-5 grid gap-3">
+            <div className="grid gap-1.5">
               <span className="text-sm font-medium text-foreground">求解算法</span>
-              <div className="grid gap-3 md:grid-cols-3">
-                {(
-                  Object.entries(SUPPORTED_ALGORITHMS) as Array<
-                    [OptimizationAlgorithm, typeof activeAlgorithm]
-                  >
-                ).map(([key, settings]) => (
+              <div className="grid gap-2 md:grid-cols-3">
+                {OPTIMIZATION_ALGORITHMS.map((settings) => (
                   <label
-                    key={key}
-                    className={`cursor-pointer rounded-[24px] border p-4 transition ${
-                      algorithm === key
+                    key={settings.id}
+                    className={`cursor-pointer rounded-[20px] border p-3 transition ${
+                      algorithm === settings.id
                         ? "border-accent bg-accent/8"
                         : "border-border bg-white/75"
                     }`}
@@ -1076,16 +1084,16 @@ export default function HobbingOptimizerApp() {
                     <input
                       type="radio"
                       name="algorithm"
-                      value={key}
-                      checked={algorithm === key}
-                      onChange={() => handleAlgorithmChange(key)}
+                      value={settings.id}
+                      checked={algorithm === settings.id}
+                      onChange={() => handleAlgorithmChange(settings.id)}
                       className="sr-only"
                     />
                     <div className="font-semibold text-foreground">{settings.label}</div>
-                    <p className="mt-2 text-sm leading-6 text-muted">
+                    <p className="mt-1.5 text-xs leading-5 text-muted">
                       {settings.description}
                     </p>
-                    <p className="mt-3 text-xs font-medium uppercase tracking-[0.16em] text-muted">
+                    <p className="mt-2 text-[10px] font-medium uppercase tracking-[0.16em] text-muted">
                       MATLAB Hint: {settings.matlabHints.join(" / ")}
                     </p>
                   </label>
@@ -1093,76 +1101,9 @@ export default function HobbingOptimizerApp() {
               </div>
             </div>
 
-            <div className="rounded-[24px] border border-border bg-white/70 p-5">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted">
-                    MATLAB 算法文件转换
-                  </h3>
-                  <p className="mt-2 text-sm leading-6 text-muted">
-                    上传 `.m` 文件后，系统会优先调用 DeepSeek 识别并映射到当前支持的
-                    MOFATA、MOGWO 或 MOPSO。
-                  </p>
-                </div>
-                <span className="rounded-full bg-accent/8 px-3 py-1 text-xs font-semibold text-accent">
-                  当前算法：{activeAlgorithm.label}
-                </span>
-              </div>
-
-              <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
-                <label className="grid gap-2">
-                  <span className="text-sm font-medium text-foreground">
-                    上传 `.m` 文件
-                  </span>
-                  <input
-                    type="file"
-                    accept=".m"
-                    onChange={handleMatlabFileChange}
-                    className="rounded-2xl border border-border bg-white/80 px-4 py-3 text-sm text-foreground file:mr-4 file:rounded-full file:border-0 file:bg-accent/12 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-accent"
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={handleConvertMatlabAlgorithm}
-                  disabled={isConvertingAlgorithm || !matlabFile}
-                  className="self-end rounded-full border border-border bg-white/80 px-5 py-3 text-sm font-semibold text-foreground transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {isConvertingAlgorithm ? "转换中..." : "AI 转换 .m 算法文件"}
-                </button>
-              </div>
-
-              <div className="mt-4 rounded-[20px] border border-border/80 bg-[#fffdf7] p-4">
-                <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-                  <div className="font-medium text-foreground">
-                    {matlabConversion.fileName || "尚未选择文件"}
-                  </div>
-                  <div className="text-muted">
-                    置信度：{formatConfidence(matlabConversion.confidence)}
-                    {matlabConversion.source && ` / 来源：${matlabConversion.source}`}
-                  </div>
-                </div>
-                <p className="mt-3 text-sm leading-6 text-foreground">
-                  {matlabConversion.detail}
-                </p>
-                <p className="mt-2 text-sm text-muted">
-                  受支持格式：
-                  {matlabConversion.normalizedFormat || "待转换"}
-                </p>
-                {matlabConversion.notes.length > 0 && (
-                  <ul className="mt-4 grid gap-2 text-sm leading-6 text-muted">
-                    {matlabConversion.notes.map((note) => (
-                      <li key={note} className="rounded-2xl bg-accent/6 px-4 py-3">
-                        {note}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-
-            <div className="grid gap-2">
+            <div className="grid gap-1.5">
               <span className="text-sm font-medium text-foreground">运行档位</span>
-              <div className="grid gap-3 md:grid-cols-2">
+              <div className="grid gap-2 md:grid-cols-2">
                 {(
                   Object.entries(OPTIMIZATION_PROFILES) as Array<
                     [OptimizationProfile, typeof activeProfile]
@@ -1170,7 +1111,7 @@ export default function HobbingOptimizerApp() {
                 ).map(([key, settings]) => (
                   <label
                     key={key}
-                    className={`cursor-pointer rounded-[24px] border p-4 transition ${
+                    className={`cursor-pointer rounded-[20px] border p-3 transition ${
                       profile === key
                         ? "border-accent bg-accent/8"
                         : "border-border bg-white/75"
@@ -1185,10 +1126,10 @@ export default function HobbingOptimizerApp() {
                       className="sr-only"
                     />
                     <div className="font-semibold text-foreground">{settings.label}</div>
-                    <p className="mt-2 text-sm leading-6 text-muted">
+                    <p className="mt-1.5 text-xs leading-5 text-muted">
                       {settings.description}
                     </p>
-                    <p className="mt-3 text-xs font-medium uppercase tracking-[0.16em] text-muted">
+                    <p className="mt-2 text-[10px] font-medium uppercase tracking-[0.16em] text-muted">
                       N={settings.N} / Max_FEs={settings.Max_FEs}
                     </p>
                   </label>
@@ -1199,61 +1140,61 @@ export default function HobbingOptimizerApp() {
             <button
               type="button"
               onClick={handleRunOptimization}
-              disabled={!config || isBuilding || isConvertingAlgorithm}
-              className="rounded-full bg-accent-warm px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#9f5716] disabled:cursor-not-allowed disabled:bg-accent-warm/50"
+              disabled={!config || isBuilding}
+              className="rounded-full bg-accent-warm px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#9f5716] disabled:cursor-not-allowed disabled:bg-accent-warm/50"
             >
               {isRunning
                 ? `重新运行 ${activeAlgorithm.label}`
                 : `启动 ${activeAlgorithm.label} 优化`}
             </button>
 
-            <div className="rounded-[24px] border border-border bg-white/70 p-5">
+            <div className="rounded-[20px] border border-border bg-white/70 p-4">
               <div className="flex items-center justify-between gap-4">
-                <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted">
+                <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
                   运行进度
                 </h3>
                 <span className="font-mono text-sm font-semibold text-foreground">
                   {progress.toFixed(1)}%
                 </span>
               </div>
-              <div className="mt-4 h-3 overflow-hidden rounded-full bg-[#e7dfcf]">
+              <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-[#e7dfcf]">
                 <div
                   className="h-full rounded-full bg-gradient-to-r from-accent to-accent-warm transition-all"
                   style={{ width: `${progress}%` }}
                 />
               </div>
-              <div className="mt-4 grid gap-3 text-sm text-muted sm:grid-cols-3">
-                <div className="rounded-2xl bg-accent/6 px-4 py-3">
+              <div className="mt-3 grid gap-2 text-xs text-muted sm:grid-cols-3">
+                <div className="rounded-xl bg-accent/6 px-3 py-2.5">
                   评估次数
-                  <div className="mt-1 font-mono text-lg font-semibold text-foreground">
+                  <div className="mt-1 font-mono text-base font-semibold text-foreground">
                     {stats?.feCount ?? 0}
                   </div>
                 </div>
-                <div className="rounded-2xl bg-accent/6 px-4 py-3">
+                <div className="rounded-xl bg-accent/6 px-3 py-2.5">
                   档案规模
-                  <div className="mt-1 font-mono text-lg font-semibold text-foreground">
+                  <div className="mt-1 font-mono text-base font-semibold text-foreground">
                     {stats?.archiveSize ?? 0}
                   </div>
                 </div>
-                <div className="rounded-2xl bg-accent/6 px-4 py-3">
+                <div className="rounded-xl bg-accent/6 px-3 py-2.5">
                   耗时
-                  <div className="mt-1 font-mono text-lg font-semibold text-foreground">
+                  <div className="mt-1 font-mono text-base font-semibold text-foreground">
                     {stats ? formatSeconds(stats.elapsedMs) : "0.00 s"}
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="rounded-[24px] border border-border bg-white/70 p-5">
-              <div className="flex items-center justify-between gap-4">
-                <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-muted">
+            <div className="rounded-[20px] border border-border bg-white/70 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
                   多目标偏好权重
                 </h3>
-                <span className="text-xs font-semibold uppercase tracking-[0.16em] text-muted">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted">
                   自动归一化
                 </span>
               </div>
-              <div className="mt-4 grid gap-4">
+              <div className="mt-3 grid gap-3">
                 {(
                   [
                     ["energy", "能耗 E", weights.energy, normalizedWeights.energy],
@@ -1266,8 +1207,8 @@ export default function HobbingOptimizerApp() {
                     ],
                   ] as const
                 ).map(([key, label, value, normalized]) => (
-                  <label key={key} className="grid gap-2">
-                    <div className="flex items-center justify-between gap-4 text-sm">
+                  <label key={key} className="grid gap-1.5">
+                    <div className="flex items-center justify-between gap-3 text-xs">
                       <span className="font-medium text-foreground">{label}</span>
                       <span className="font-mono text-muted">
                         {value} / {(normalized * 100).toFixed(1)}%
@@ -1295,82 +1236,104 @@ export default function HobbingOptimizerApp() {
         </div>
       </section>
 
-      <section className="no-print grid gap-6 xl:grid-cols-[1.45fr_0.85fr]">
-        <div className="rounded-[32px] border border-border bg-surface p-6 shadow-[var(--shadow)] backdrop-blur md:p-8">
-          <div className="flex flex-wrap items-center justify-between gap-4">
+      <section className="no-print grid gap-5 xl:grid-cols-[1.45fr_0.85fr]">
+        <div className="rounded-[24px] border border-border bg-surface p-5 shadow-[var(--shadow)] backdrop-blur md:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent">
                 Step 3
               </p>
-              <h2 className="mt-2 text-2xl font-semibold text-foreground">
+              <h2 className="mt-2 text-xl font-semibold text-foreground">
                 3D Pareto 前沿分析
               </h2>
             </div>
-            <span className="rounded-full bg-accent/10 px-4 py-2 text-xs font-semibold text-accent">
+            <span className="rounded-full bg-accent/10 px-3 py-1.5 text-[10px] font-semibold text-accent">
               E - C - Ra
             </span>
           </div>
 
-          <div className="mt-6">
+          <div className="mt-5">
             {deferredPfData.length > 0 ? (
               <ParetoChart
                 data={deferredPfData}
                 highlightedPoint={recommendedSolution?.objectives ?? null}
               />
             ) : (
-              <div className="flex h-[520px] items-center justify-center rounded-[28px] border border-dashed border-border bg-white/70 text-sm text-muted">
+              <div className="flex h-[480px] items-center justify-center rounded-[20px] border border-dashed border-border bg-white/70 text-xs text-muted">
                 请先建立模型并运行优化，3D Pareto 前沿会在这里展示。
               </div>
             )}
           </div>
         </div>
 
-        <div className="rounded-[32px] border border-border bg-surface p-6 shadow-[var(--shadow)] backdrop-blur md:p-8">
-          <div className="flex items-center justify-between gap-4">
+        <div className="rounded-[24px] border border-border bg-surface p-5 shadow-[var(--shadow)] backdrop-blur md:p-6">
+          <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent">
                 Step 4
               </p>
-              <h2 className="mt-2 text-2xl font-semibold text-foreground">
+              <h2 className="mt-2 text-xl font-semibold text-foreground">
                 推荐解与候选列表
               </h2>
             </div>
-            <button
-              type="button"
-              onClick={handlePrintCard}
-              disabled={!recommendedSolution}
-              className="rounded-full border border-border bg-white/80 px-4 py-2 text-sm font-semibold text-foreground transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              打印工艺卡
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleValidateResult}
+                disabled={!recommendedSolution || !config || isValidatingResult}
+                className="rounded-full border border-accent/30 bg-accent/8 px-3 py-1.5 text-xs font-semibold text-accent transition hover:border-accent hover:bg-accent/12 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isValidatingResult
+                  ? "校验中..."
+                  : resultValidation
+                    ? "重新校验结果"
+                    : "校验优化结果"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowValidationDetails((current) => !current)}
+                disabled={!resultValidation && !isValidatingResult && !resultValidationError}
+                className="rounded-full border border-border bg-white/80 px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {showValidationDetails ? "收起校验详情" : "查看校验详情"}
+              </button>
+              <button
+                type="button"
+                onClick={handlePrintCard}
+                disabled={!recommendedSolution}
+                className="rounded-full border border-border bg-white/80 px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                打印工艺卡
+              </button>
+            </div>
           </div>
 
           {recommendedSolution ? (
-            <div className="mt-6 space-y-4">
-              <div className="rounded-[24px] border border-accent/20 bg-accent/8 p-5">
+            <div className="mt-5 space-y-3">
+              <div className="rounded-[20px] border border-accent/20 bg-accent/8 p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">
                   推荐解
                 </p>
-                <div className="mt-3 grid gap-3 text-sm text-muted">
-                  <div className="flex items-center justify-between gap-4">
+                <div className="mt-2.5 grid gap-2.5 text-xs text-muted">
+                  <div className="flex items-center justify-between gap-3">
                     <span>算法</span>
                     <span className="font-semibold text-foreground">
                       {runAlgorithmLabel ?? activeAlgorithm.label}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center justify-between gap-3">
                     <span>决策变量</span>
                     <span className="font-mono font-semibold text-foreground">
                       [{recommendedSolution.decision.map((item) => item.toFixed(2)).join(", ")}]
                     </span>
                   </div>
-                  <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center justify-between gap-3">
                     <span>目标函数</span>
                     <span className="font-mono font-semibold text-foreground">
                       [{recommendedSolution.objectives.map((item) => item.toFixed(4)).join(", ")}]
                     </span>
                   </div>
-                  <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center justify-between gap-3">
                     <span>TOPSIS 综合评分</span>
                     <span className="font-mono font-semibold text-foreground">
                       {recommendedSolution.score.toFixed(4)}
@@ -1379,14 +1342,63 @@ export default function HobbingOptimizerApp() {
                 </div>
               </div>
 
-              <div className="space-y-3">
-                <div className="text-sm font-semibold uppercase tracking-[0.18em] text-muted">
+              <div className="rounded-[16px] border border-border bg-white/80 px-3 py-2.5">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="font-semibold uppercase tracking-[0.14em] text-muted">
+                    结果校验摘要
+                  </span>
+                  {isValidatingResult ? (
+                    <span className="rounded-full border border-accent/30 bg-accent/8 px-2 py-0.5 text-[10px] font-semibold text-accent">
+                      校验中
+                    </span>
+                  ) : resultValidation ? (
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${validationVerdictClassName(resultValidation.verdict)}`}
+                    >
+                      {resultValidation.verdict}
+                    </span>
+                  ) : resultValidationError ? (
+                    <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
+                      校验失败
+                    </span>
+                  ) : (
+                    <span className="rounded-full border border-border bg-white px-2 py-0.5 text-[10px] font-semibold text-muted">
+                      未校验
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1.5 text-xs leading-5 text-muted">
+                  {isValidatingResult
+                    ? "正在分析当前工艺输入与推荐解..."
+                    : resultValidation
+                      ? resultValidation.summary
+                      : resultValidationError
+                        ? resultValidationError
+                        : "点击“校验优化结果”获取可行性与边界风险结论。"}
+                </div>
+                {resultValidation && (
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
+                    <span className="rounded-full border border-border bg-white px-2 py-0.5 font-semibold text-muted">
+                      {resultValidation.source === "deepseek" ? "AI + 规则" : "规则引擎"}
+                    </span>
+                    <span className="rounded-full border border-border bg-white px-2 py-0.5 font-semibold text-muted">
+                      异常信号 {resultValidation.abnormalSignals.length}
+                    </span>
+                    <span className="rounded-full border border-border bg-white px-2 py-0.5 font-semibold text-muted">
+                      建议 {resultValidation.recommendations.length}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2.5">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
                   Top 5 候选解
                 </div>
                 {rankedSolutions.map((solution, index) => (
                   <div
                     key={`${solution.index}-${solution.score.toFixed(5)}`}
-                    className={`rounded-[24px] border p-4 text-sm ${
+                    className={`stable-paint rounded-[20px] border p-3 text-xs ${
                       index === 0
                         ? "border-accent bg-accent/8"
                         : "border-border bg-white/75"
@@ -1419,6 +1431,182 @@ export default function HobbingOptimizerApp() {
           )}
         </div>
       </section>
+
+      {recommendedSolution &&
+        (isValidatingResult || resultValidation || resultValidationError) && (
+          <section
+            ref={validationSectionRef}
+            className="no-print rounded-[24px] border border-border bg-surface p-5 shadow-[var(--shadow)] md:p-6"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent">
+                  Step 5
+                </p>
+                <h2 className="mt-2 text-xl font-semibold text-foreground">
+                  结果校验与工程建议
+                </h2>
+              </div>
+              <div className="flex items-center gap-2">
+                {resultValidation && (
+                  <>
+                    <span className="rounded-full border border-border bg-white px-2.5 py-1 text-[10px] font-semibold text-muted">
+                      {resultValidation.source === "deepseek" ? "AI + 规则" : "规则引擎"}
+                    </span>
+                    <span
+                      className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold ${validationVerdictClassName(resultValidation.verdict)}`}
+                    >
+                      {resultValidation.verdict}
+                    </span>
+                  </>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowValidationDetails((current) => !current)}
+                  className="rounded-full border border-border bg-white/80 px-3 py-1.5 text-xs font-semibold text-foreground transition hover:border-accent hover:text-accent"
+                >
+                  {showValidationDetails ? "收起详情" : "展开详情"}
+                </button>
+              </div>
+            </div>
+
+            {!showValidationDetails ? (
+              <div className="mt-4 rounded-[16px] border border-border bg-white/85 px-4 py-3 text-sm text-muted">
+                {isValidatingResult
+                  ? "正在校验中，完成后可展开查看约束、边界与调参建议。"
+                  : resultValidation
+                    ? resultValidation.summary
+                    : `结果校验失败：${resultValidationError ?? "未知错误"}`}
+              </div>
+            ) : isValidatingResult ? (
+              <div className="mt-4 rounded-[16px] border border-border bg-white/90 px-4 py-3 text-sm text-muted">
+                正在分析当前工艺输入、动态建模参数与优化结果，请稍候...
+              </div>
+            ) : resultValidationError ? (
+              <div className="mt-4 rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                结果校验失败：{resultValidationError}
+              </div>
+            ) : resultValidation ? (
+              <div className="mt-4 space-y-4">
+                <div className="rounded-[16px] border border-border bg-[#fffdf7] px-4 py-3 text-sm leading-6 text-muted">
+                  {resultValidation.summary}
+                  {resultValidation.aiReasoning && (
+                    <div className="mt-2 text-xs leading-5 text-muted-soft">
+                      AI 依据：{resultValidation.aiReasoning}
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="rounded-xl border border-border bg-white px-3 py-2.5">
+                    <div className="text-[11px] text-muted-soft">切削速度</div>
+                    <div className="mt-1 font-mono text-sm font-semibold text-foreground">
+                      {resultValidation.coreMetrics.cuttingSpeed.toFixed(2)} m/min
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-border bg-white px-3 py-2.5">
+                    <div className="text-[11px] text-muted-soft">切削功率</div>
+                    <div className="mt-1 font-mono text-sm font-semibold text-foreground">
+                      {resultValidation.coreMetrics.cuttingPower.toFixed(3)} kW
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-border bg-white px-3 py-2.5">
+                    <div className="text-[11px] text-muted-soft">粗糙度</div>
+                    <div className="mt-1 font-mono text-sm font-semibold text-foreground">
+                      {resultValidation.coreMetrics.roughness.toFixed(4)} μm
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-border bg-white px-3 py-2.5">
+                    <div className="text-[11px] text-muted-soft">刀具寿命 / 需求</div>
+                    <div className="mt-1 font-mono text-sm font-semibold text-foreground">
+                      {resultValidation.coreMetrics.toolLife.toFixed(2)} /{" "}
+                      {resultValidation.coreMetrics.toolLifeRequired.toFixed(2)} min
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-2">
+                  <div className="rounded-[16px] border border-border bg-white/85 p-3">
+                    <div className="text-xs font-semibold uppercase tracking-[0.16em] text-muted">
+                      约束一致性
+                    </div>
+                    <div className="mt-2 space-y-1.5">
+                      {resultValidation.constraintChecks.map((item) => (
+                        <div
+                          key={item.id}
+                          className={`rounded-lg border px-3 py-2 text-xs ${validationItemClassName(item.status)}`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium text-foreground">{item.label}</span>
+                            <span className="rounded-full border border-white/60 bg-white/70 px-1.5 py-0.5 text-[10px] font-semibold text-muted">
+                              {validationItemStatusLabel(item.status)}
+                            </span>
+                          </div>
+                          <div className="mt-1 text-muted">{item.detail}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="rounded-[16px] border border-border bg-white/85 p-3">
+                    <div className="text-xs font-semibold uppercase tracking-[0.16em] text-muted">
+                      边界贴近检查
+                    </div>
+                    <div className="mt-2 space-y-1.5">
+                      {resultValidation.boundaryChecks.map((item) => (
+                        <div
+                          key={item.id}
+                          className={`rounded-lg border px-3 py-2 text-xs ${validationBoundaryClassName(item.status)}`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium text-foreground">{item.label}</span>
+                            <span className="rounded-full border border-white/60 bg-white/70 px-1.5 py-0.5 text-[10px] font-semibold text-muted">
+                              {validationBoundaryStatusLabel(item.status)}
+                            </span>
+                          </div>
+                          <div className="mt-1 font-mono text-muted">
+                            {item.value.toFixed(2)} / [{item.lower.toFixed(2)}, {item.upper.toFixed(2)}]
+                          </div>
+                          <div className="mt-1 text-muted">{item.detail}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-2">
+                  <div className="rounded-[16px] border border-amber-100 bg-amber-50/70 p-3">
+                    <div className="text-xs font-semibold uppercase tracking-[0.16em] text-amber-700">
+                      异常信号
+                    </div>
+                    {resultValidation.abnormalSignals.length > 0 ? (
+                      <ul className="mt-2 grid gap-1 text-xs text-amber-800">
+                        {resultValidation.abnormalSignals.map((item) => (
+                          <li key={item}>- {item}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="mt-2 text-xs text-amber-800">
+                        未发现明显异常信号。
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="rounded-[16px] border border-border bg-[#fffdf7] p-3">
+                    <div className="text-xs font-semibold uppercase tracking-[0.16em] text-muted">
+                      调参建议
+                    </div>
+                    <ul className="mt-2 grid gap-1 text-xs text-muted">
+                      {resultValidation.recommendations.map((item) => (
+                        <li key={item}>- {item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </section>
+        )}
 
       <section className="print-card">
         <ProcessCard

@@ -34,6 +34,7 @@ export interface BuildModelRequest {
   toolChangeTime: number;
   toolSharpeningCost: number;
   toolSharpeningLife: number;
+  aiModel?: AiModelType;
 }
 
 export interface ModelConfig {
@@ -65,6 +66,25 @@ export interface ModelConfig {
 }
 
 export type ModelSource = "deepseek" | "fallback";
+export type AiModelType = "deepseek" | "local_rules";
+export interface AiModelInfo {
+  id: AiModelType;
+  name: string;
+  description: string;
+}
+
+export const SUPPORTED_AI_MODELS: Record<AiModelType, AiModelInfo> = {
+  deepseek: {
+    id: "deepseek",
+    name: "DeepSeek AI",
+    description: "使用 DeepSeek 大语言模型进行智能工艺建模",
+  },
+  local_rules: {
+    id: "local_rules",
+    name: "本地规则库",
+    description: "使用内置的工艺工程规则库进行建模",
+  },
+};
 
 export type BuildModelResponse =
   | {

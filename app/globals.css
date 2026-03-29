@@ -148,6 +148,12 @@ button:active {
   page-break-inside: avoid;
 }
 
+/* Mobile/WebView repaint stabilization for data-heavy cards. */
+.stable-paint {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
 .print-only {
   display: none !important;
 }

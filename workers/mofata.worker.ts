@@ -1,5 +1,12 @@
 /// <reference lib="webworker" />
 
+import { getAlgorithmRunner } from "@/algorithm";
+import type {
+  AlgorithmRuntime,
+  ArchiveState,
+  OptimizationContext,
+  PopulationEvaluation,
+} from "@/algorithm/runtime-types";
 import {
   applyEngineeringConstraints,
   clamp,
@@ -7,13 +14,11 @@ import {
   isPenaltySolution,
   serializeDecisionVector,
   type DecisionVector,
-  type ModelConfig,
   type ObjectiveVector,
 } from "@/lib/hobbing-model";
 import {
+  getOptimizationAlgorithmConfig,
   OPTIMIZATION_PROFILES,
-  type OptimizationAlgorithm,
-  type OptimizationProfileConfig,
   type OptimizationWorkerCommand,
   type OptimizationWorkerDoneMessage,
   type OptimizationWorkerErrorMessage,
@@ -26,30 +31,6 @@ const scope = self as DedicatedWorkerGlobalScope;
 const REPORT_INTERVAL = 800;
 const DIMENSION = 4;
 const EPSILON = 1e-12;
-
-type ArchiveState = {
-  archiveX: DecisionVector[];
-  archiveF: ObjectiveVector[];
-};
-
-type PopulationEvaluation = {
-  positions: DecisionVector[];
-  objectives: ObjectiveVector[];
-  feCount: number;
-};
-
-type OptimizationContext = {
-  jobId: string;
-  algorithm: OptimizationAlgorithm;
-  config: ModelConfig;
-  settings: OptimizationProfileConfig;
-  lowerBounds: number[];
-  upperBounds: number[];
-  archive: ArchiveState;
-  startTime: number;
-  feCount: number;
-  lastReport: number;
-};
 
 function dominates(a: number[], b: number[]): boolean {
   return (
@@ -576,305 +557,51 @@ function createContext(command: OptimizationWorkerCommand): OptimizationContext 
   };
 }
 
-function runMOFATA(context: OptimizationContext): void {
-  let population = initializationPWLCM(
-    context.settings.N,
-    DIMENSION,
-    context.upperBounds,
-    context.lowerBounds,
-  );
-  let bestIntegral = Infinity;
-  let worstIntegral = 0;
-  const arf = 0.2;
-
-  while (context.feCount < context.settings.Max_FEs) {
-    const evaluation = evaluatePopulation(population, context);
-    maybeReportProgress(context);
-
-    if (
-      context.feCount >= context.settings.Max_FEs ||
-      evaluation.positions.length === 0
-    ) {
-      break;
-    }
-
-    const surrogateFitness = computeSurrogateFitness(evaluation.objectives);
-    const ordered = surrogateFitness
-      .map((value, index) => ({ value, index }))
-      .sort((left, right) => left.value - right.value);
-    const orderedValues = ordered.map((item) => item.value);
-    const orderedIndices = ordered.map((item) => item.index);
-    const bestPopulationIndex = orderedIndices[0] ?? 0;
-    const worstPopulationIndex =
-      orderedIndices[orderedIndices.length - 1] ?? bestPopulationIndex;
-    const worstFitness = orderedValues[orderedValues.length - 1] ?? 0;
-    const integral = cumulativeTrapezoid(orderedValues);
-    const currentIntegral = integral[integral.length - 1] ?? 0;
-
-    if (currentIntegral > worstIntegral) {
-      worstIntegral = currentIntegral;
-    }
-
-    if (currentIntegral < bestIntegral) {
-      bestIntegral = currentIntegral;
-    }
-
-    const denominator = bestIntegral - worstIntegral;
-    const ip =
-      Math.abs(denominator) < EPSILON
-        ? 0
-        : clamp((currentIntegral - worstIntegral) / denominator, 0, 1);
-
-    const elitePosition = chooseArchiveLeader(
-      context.archive,
-      evaluation.positions,
-      evaluation.objectives,
-      context.lowerBounds,
-      context.upperBounds,
-    );
-    const progress = context.feCount / context.settings.Max_FEs;
-    const tangent = Math.tan(-progress + 1);
-    const safeTangent =
-      Math.abs(tangent) < 1e-6 ? (tangent < 0 ? -1e-6 : 1e-6) : tangent;
-    const a = safeTangent;
-    const b = 1 / safeTangent;
-    const nextPopulation = population.map((particle) => [...particle]);
-    const bestDenominator =
-      surrogateFitness[bestPopulationIndex] - worstFitness || EPSILON;
-
-    for (let i = 0; i < context.settings.N; i += 1) {
-      const para1 = Array.from(
-        { length: DIMENSION },
-        () => a * Math.random() - a * Math.random(),
-      );
-      const para2 = Array.from(
-        { length: DIMENSION },
-        () => b * Math.random() - b * Math.random(),
-      );
-      const probability = clamp(
-        (surrogateFitness[i] - worstFitness) / bestDenominator,
-        0,
-        1,
-      );
-
-      if (Math.random() > ip) {
-        nextPopulation[i] = randomDecision(context.lowerBounds, context.upperBounds);
-        continue;
-      }
-
-      for (let j = 0; j < DIMENSION; j += 1) {
-        const randomIndex = Math.floor(Math.random() * context.settings.N);
-
-        if (Math.random() < probability) {
-          if (i === bestPopulationIndex) {
-            nextPopulation[i][j] =
-              elitePosition[j] + population[i][j] * para1[j];
-          } else {
-            nextPopulation[i][j] =
-              elitePosition[j] +
-              (elitePosition[j] - population[i][j]) * para1[j] * 2;
-          }
-        } else {
-          let mutated =
-            population[randomIndex][j] + para2[j] * population[i][j];
-          mutated =
-            0.5 * (arf + 1) * (context.lowerBounds[j] + context.upperBounds[j]) -
-            arf * mutated;
-          nextPopulation[i][j] = mutated;
-        }
-
-        nextPopulation[i][j] = clamp(
-          nextPopulation[i][j],
-          context.lowerBounds[j],
-          context.upperBounds[j],
-        );
-      }
-    }
-
-    population = nextPopulation;
-
-    if (Math.random() < 0.2 && context.feCount < context.settings.Max_FEs) {
-      const levyStep = levy(DIMENSION);
-      const candidate = elitePosition.map(
-        (value, index) =>
-          value +
-          0.01 * levyStep[index] * (context.upperBounds[index] - context.lowerBounds[index]),
-      );
-      const constrained = applyEngineeringConstraints(
-        candidate,
-        context.lowerBounds,
-        context.upperBounds,
-      );
-      const objective = hobbingObjective(constrained, context.config);
-
-      updateArchive(
-        context.archive,
-        constrained,
-        objective,
-        context.settings.ArchiveMaxSize,
-      );
-
-      context.feCount += 1;
-      population[worstPopulationIndex] = candidate.map((value, index) =>
-        clamp(value, context.lowerBounds[index], context.upperBounds[index]),
-      );
-      maybeReportProgress(context);
-    }
-  }
+function createAlgorithmRuntime(): AlgorithmRuntime {
+  return {
+    dimension: DIMENSION,
+    epsilon: EPSILON,
+    clamp,
+    initializationPWLCM,
+    evaluatePopulation,
+    maybeReportProgress,
+    computeSurrogateFitness,
+    cumulativeTrapezoid,
+    chooseArchiveLeader,
+    chooseArchiveLeaders,
+    randomDecision,
+    levy,
+    applyEngineeringConstraints,
+    hobbingObjective,
+    updateArchive,
+    shouldReplacePersonalBest,
+    cloneDecisionVector,
+  };
 }
 
-function runMOGWO(context: OptimizationContext): void {
-  const greyWolves = initializationPWLCM(
-    context.settings.N,
-    DIMENSION,
-    context.upperBounds,
-    context.lowerBounds,
-  );
-
-  while (context.feCount < context.settings.Max_FEs) {
-    const evaluation = evaluatePopulation(greyWolves, context);
-    maybeReportProgress(context);
-
-    if (
-      context.feCount >= context.settings.Max_FEs ||
-      evaluation.positions.length === 0
-    ) {
-      break;
-    }
-
-    const a = 2 - context.feCount * (2 / context.settings.Max_FEs);
-    const [alphaPos, betaPos, deltaPos] = chooseArchiveLeaders(
-      context.archive,
-      evaluation.positions,
-      evaluation.objectives,
-      context.lowerBounds,
-      context.upperBounds,
-    );
-
-    for (let i = 0; i < context.settings.N; i += 1) {
-      for (let j = 0; j < DIMENSION; j += 1) {
-        let r1 = Math.random();
-        let r2 = Math.random();
-        const A1 = 2 * a * r1 - a;
-        const C1 = 2 * r2;
-        const DAlpha = Math.abs(C1 * alphaPos[j] - greyWolves[i][j]);
-        const X1 = alphaPos[j] - A1 * DAlpha;
-
-        r1 = Math.random();
-        r2 = Math.random();
-        const A2 = 2 * a * r1 - a;
-        const C2 = 2 * r2;
-        const DBeta = Math.abs(C2 * betaPos[j] - greyWolves[i][j]);
-        const X2 = betaPos[j] - A2 * DBeta;
-
-        r1 = Math.random();
-        r2 = Math.random();
-        const A3 = 2 * a * r1 - a;
-        const C3 = 2 * r2;
-        const DDelta = Math.abs(C3 * deltaPos[j] - greyWolves[i][j]);
-        const X3 = deltaPos[j] - A3 * DDelta;
-
-        greyWolves[i][j] = clamp(
-          (X1 + X2 + X3) / 3,
-          context.lowerBounds[j],
-          context.upperBounds[j],
-        );
-      }
-    }
-  }
-}
-
-function runMOPSO(context: OptimizationContext): void {
-  const velocities = Array.from({ length: context.settings.N }, () =>
-    Array(DIMENSION).fill(0),
-  );
-  const positions = initializationPWLCM(
-    context.settings.N,
-    DIMENSION,
-    context.upperBounds,
-    context.lowerBounds,
-  );
-  const personalBestPositions = positions.map((position) =>
-    applyEngineeringConstraints(position, context.lowerBounds, context.upperBounds),
-  );
-  const personalBestObjectives = Array.from(
-    { length: context.settings.N },
-    () => [Infinity, Infinity, Infinity] as ObjectiveVector,
-  );
-  const inertiaWeight = 0.5;
-  const c1 = 1.5;
-  const c2 = 1.5;
-  const vmax = context.upperBounds.map(
-    (upper, index) => 0.1 * (upper - context.lowerBounds[index]),
-  );
-  const vmin = vmax.map((value) => -value);
-
-  while (context.feCount < context.settings.Max_FEs) {
-    const evaluation = evaluatePopulation(positions, context);
-
-    for (let i = 0; i < evaluation.positions.length; i += 1) {
-      if (
-        shouldReplacePersonalBest(
-          evaluation.objectives[i],
-          personalBestObjectives[i],
-        )
-      ) {
-        personalBestPositions[i] = cloneDecisionVector(evaluation.positions[i]);
-        personalBestObjectives[i] = [...evaluation.objectives[i]];
-      }
-    }
-
-    maybeReportProgress(context);
-
-    if (
-      context.feCount >= context.settings.Max_FEs ||
-      evaluation.positions.length === 0
-    ) {
-      break;
-    }
-
-    for (let i = 0; i < context.settings.N; i += 1) {
-      const globalBest = chooseArchiveLeader(
-        context.archive,
-        evaluation.positions,
-        evaluation.objectives,
-        context.lowerBounds,
-        context.upperBounds,
-      );
-
-      for (let j = 0; j < DIMENSION; j += 1) {
-        velocities[i][j] = clamp(
-          inertiaWeight * velocities[i][j] +
-            c1 * Math.random() * (personalBestPositions[i][j] - positions[i][j]) +
-            c2 * Math.random() * (globalBest[j] - positions[i][j]),
-          vmin[j],
-          vmax[j],
-        );
-        positions[i][j] = clamp(
-          positions[i][j] + velocities[i][j],
-          context.lowerBounds[j],
-          context.upperBounds[j],
-        );
-      }
-    }
-  }
-}
-
-function runOptimization(command: OptimizationWorkerCommand): void {
+async function runOptimization(command: OptimizationWorkerCommand): Promise<void> {
   const context = createContext(command);
+  const algorithmConfig = getOptimizationAlgorithmConfig(command.algorithm);
 
-  if (command.algorithm === "mofata") {
-    runMOFATA(context);
-  } else if (command.algorithm === "mogwo") {
-    runMOGWO(context);
-  } else {
-    runMOPSO(context);
+  if (!algorithmConfig) {
+    throw new Error(
+      `算法 "${command.algorithm}" 未在 algorithm-config.js 中配置。`,
+    );
   }
 
+  const runner = await getAlgorithmRunner(algorithmConfig.entry);
+
+  if (!runner) {
+    throw new Error(
+      `算法入口 "${algorithmConfig.entry}" 未实现，请检查 algorithm 目录中的算法文件。`,
+    );
+  }
+
+  runner(context, createAlgorithmRuntime());
   finalizeOptimization(context);
 }
 
-scope.onmessage = (event: MessageEvent<OptimizationWorkerCommand>) => {
+scope.onmessage = async (event: MessageEvent<OptimizationWorkerCommand>) => {
   const command = event.data;
 
   if (!command || command.type !== "start") {
@@ -882,7 +609,7 @@ scope.onmessage = (event: MessageEvent<OptimizationWorkerCommand>) => {
   }
 
   try {
-    runOptimization(command);
+    await runOptimization(command);
   } catch (error) {
     const message: OptimizationWorkerErrorMessage = {
       type: "error",

@@ -1,16 +1,26 @@
+import algorithmConfig from "@/algorithm-config";
 import type {
   DecisionVector,
   ModelConfig,
   ObjectiveVector,
 } from "@/lib/hobbing-model";
+import type {
+  AlgorithmConfigFile,
+  AlgorithmConfigItem,
+} from "./algorithm-config-types";
 
 export type OptimizationProfile = "preview" | "accurate";
-export type OptimizationAlgorithm = "mofata" | "mogwo" | "mopso";
+export type OptimizationAlgorithm = string;
 
 export interface OptimizationAlgorithmConfig {
+  id: string;
+  entry: string;
   label: string;
   description: string;
   matlabHints: string[];
+  features: string[];
+  useCases: string[];
+  strengths: string[];
 }
 
 export interface OptimizationProfileConfig {
@@ -33,26 +43,94 @@ export interface OptimizationResult {
   stats: OptimizationStats;
 }
 
-export const SUPPORTED_ALGORITHMS: Record<
-  OptimizationAlgorithm,
-  OptimizationAlgorithmConfig
-> = {
-  mofata: {
-    label: "MOFATA",
-    description: "改进海市蜃楼多目标算法，适合当前滚齿工艺问题的高保真求解。",
-    matlabHints: ["Levy", "surrogate_fit", "cumtrapz", "Elite_position"],
-  },
-  mogwo: {
-    label: "MOGWO",
-    description: "多目标灰狼优化算法，使用 Alpha/Beta/Delta 领导层更新种群。",
-    matlabHints: ["GreyWolves", "Alpha_pos", "Beta_pos", "Delta_pos"],
-  },
-  mopso: {
-    label: "MOPSO",
-    description: "多目标粒子群优化算法，使用 PBest、GBest 和速度更新机制。",
-    matlabHints: ["Particles_Vel", "PBest", "GBest", "Vmax"],
-  },
-};
+function asArray(value: string[] | undefined): string[] {
+  return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function normalizeAlgorithmItem(
+  item: AlgorithmConfigItem,
+): OptimizationAlgorithmConfig | null {
+  const id = item.id?.trim();
+  const entry = item.entry?.trim();
+  const label = item.label?.trim();
+  const description = item.description?.trim();
+
+  if (!id || !entry || !label || !description) {
+    return null;
+  }
+
+  return {
+    id,
+    entry,
+    label,
+    description,
+    matlabHints: asArray(item.matlabHints),
+    features: asArray(item.features),
+    useCases: asArray(item.useCases),
+    strengths: asArray(item.strengths),
+  };
+}
+
+function loadAlgorithmsFromConfig(config: AlgorithmConfigFile): OptimizationAlgorithmConfig[] {
+  const normalized: OptimizationAlgorithmConfig[] = [];
+  const seen = new Set<string>();
+
+  for (const item of config.algorithms ?? []) {
+    const entry = normalizeAlgorithmItem(item);
+    if (!entry) {
+      continue;
+    }
+
+    if (seen.has(entry.id)) {
+      continue;
+    }
+
+    normalized.push(entry);
+    seen.add(entry.id);
+  }
+
+  return normalized;
+}
+
+const loadedAlgorithmConfig = algorithmConfig as AlgorithmConfigFile;
+
+export const OPTIMIZATION_ALGORITHMS = loadAlgorithmsFromConfig(
+  loadedAlgorithmConfig,
+);
+
+if (OPTIMIZATION_ALGORITHMS.length === 0) {
+  throw new Error(
+    "algorithm-config.js 未配置任何可用算法，请至少提供一个 algorithms 条目。",
+  );
+}
+
+const supportedAlgorithmMap: Record<string, OptimizationAlgorithmConfig> =
+  Object.create(null) as Record<string, OptimizationAlgorithmConfig>;
+
+for (const item of OPTIMIZATION_ALGORITHMS) {
+  supportedAlgorithmMap[item.id] = item;
+}
+
+export const SUPPORTED_ALGORITHMS =
+  supportedAlgorithmMap as Record<
+    OptimizationAlgorithm,
+    OptimizationAlgorithmConfig
+  >;
+
+const configuredDefaultAlgorithmId =
+  loadedAlgorithmConfig.defaultAlgorithm?.trim() ?? "";
+
+export const DEFAULT_OPTIMIZATION_ALGORITHM =
+  configuredDefaultAlgorithmId &&
+  supportedAlgorithmMap[configuredDefaultAlgorithmId]
+    ? configuredDefaultAlgorithmId
+    : OPTIMIZATION_ALGORITHMS[0].id;
+
+export function getOptimizationAlgorithmConfig(
+  algorithmId: OptimizationAlgorithm,
+): OptimizationAlgorithmConfig | null {
+  return supportedAlgorithmMap[algorithmId] ?? null;
+}
 
 export const OPTIMIZATION_PROFILES: Record<
   OptimizationProfile,
@@ -120,31 +198,3 @@ export type OptimizationWorkerEvent =
   | OptimizationWorkerDoneMessage
   | OptimizationWorkerErrorMessage;
 
-export type MatlabAlgorithmConversionSource = "deepseek" | "fallback";
-export type MatlabAlgorithmConfidence = "high" | "medium" | "low";
-
-export interface MatlabAlgorithmNormalizedFormat {
-  algorithm: OptimizationAlgorithm;
-  supportedRuntime: "browser-worker";
-  inputKind: "matlab-algorithm-file";
-}
-
-export interface ConvertMatlabAlgorithmRequest {
-  fileName: string;
-  fileContent: string;
-}
-
-export type ConvertMatlabAlgorithmResponse =
-  | {
-      success: true;
-      algorithm: OptimizationAlgorithm;
-      source: MatlabAlgorithmConversionSource;
-      confidence: MatlabAlgorithmConfidence;
-      normalizedFormat: MatlabAlgorithmNormalizedFormat;
-      notes: string[];
-    }
-  | {
-      success: false;
-      error: string;
-      notes?: string[];
-    };
