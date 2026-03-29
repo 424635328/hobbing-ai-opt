@@ -11,7 +11,7 @@ git add .
 
 echo git commit
 
-git commit -m "%date:~-10% %time%"
+git commit -m "%date:~-10% %time% by Lemon Yellow"
 
 echo git push
 
